@@ -1,0 +1,340 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC ********
+# MAGIC PySpark-based Databricks notebook to implement the `preprocessor.py` Python file as a full-fledged multi-threaded PySpark program able to ingest both historical and current tag data per respective onboarded facility in Production and generate filtered timeseries data to be written into the `timeseries` Gold layered Delta table and to be passed onto the `solver.py` Python file to execute auto-runs per respective facilities linked optimizer solver model.
+# MAGIC ********
+
+# COMMAND ----------
+
+import os
+import pickle
+
+from pyspark.sql.window import Window
+from pyspark.ml.feature import PolynomialExpansion, VectorAssembler
+from pyspark.ml.linalg import Vectors
+from pyspark.ml.functions import vector_to_array
+
+from pyspark.sql.functions import (col,
+                                   when,
+                                   lit,
+                                   mean,
+                                   lag,
+                                   unix_timestamp,
+                                   expr,
+                                   isnan,
+                                   window,
+                                   row_number,
+                                   mean)
+
+# COMMAND ----------
+
+# Maximum allowed Time Lag in Seconds with respect to Bad Measurement to Fetch Last Known Good Value
+maxLagSeconds = 1800
+
+# Resample interval for the incoming data
+RESAMPLE_RATE = "60 seconds"
+
+# COMMAND ----------
+
+def resample_data(df, interval):
+    df = df.groupBy(window(col("timestamp"), interval)).agg(mean("*").alias("mean"))
+    df = df.selectExpr("window.start as timestamp", "mean.*")
+    return df
+
+# COMMAND ----------
+
+def get_last_k_measurements(variable_name, timestamp, k, data):
+    window_spec = Window.orderBy("timestamp").rowsBetween(-k, -1)
+    var_data = data.select("timestamp", variable_name)
+    var_data = var_data.withColumn("row_num", row_number().over(window_spec))
+    var_data = var_data.filter(col("timestamp") < timestamp)
+    return var_data
+
+# COMMAND ----------
+
+def modify_values_using_validity(df, config, max_lag_seconds, raw_df):
+    mdf = df.withColumn(
+        "in_range",
+        when(
+            (col(config["name"]) > config["validity_low"])
+            & (col(config["name"]) < config["validity_high"]),
+            True,
+        ).otherwise(False),
+    )
+    tdf = mdf.filter(col("in_range") == False)
+
+    if tdf.count() > 0:
+        idxs = tdf.select("timestamp").rdd.flatMap(lambda x: x).collect()
+        for idx_ in idxs:
+            href = get_last_k_measurements(config["name"], idx_, 30, raw_df)
+            href = href.withColumn(
+                "timedelta",
+                unix_timestamp(lit(idx_)) - unix_timestamp(col("timestamp")),
+            )
+            href = href.filter(col("timedelta") <= max_lag_seconds)
+            href = href.withColumn(
+                "in_range",
+                when(
+                    (col(config["name"]) > config["validity_low"])
+                    & (col(config["name"]) < config["validity_high"]),
+                    True,
+                ).otherwise(False),
+            )
+            href = href.filter(col("in_range") == True)
+
+            if href.count() > 0:
+                rval = href.orderBy(col("timestamp").desc()).first()[config["name"]]
+                mdf = mdf.withColumn(
+                    config["name"],
+                    when(col("timestamp") == idx_, rval).otherwise(col(config["name"])),
+                )
+            else:
+                mdf = mdf.withColumn(
+                    config["name"],
+                    when(col("timestamp") == idx_, lit(None)).otherwise(
+                        col(config["name"])
+                    ),
+                )
+
+    rdf = df if mdf.filter(isnan(col(config["name"]))).count() == mdf.count() else mdf
+    return rdf
+
+# COMMAND ----------
+
+def filter_variable(df, config):
+    for var in config["variables"]:
+        vname = var["name"]
+        ftype = var.get("filterType", None)
+        fpv = var.get("filterParameterValue", 0)
+
+        if ftype == "movingAverage":
+            window_spec = Window.orderBy("timestamp").rowsBetween(-fpv, 0)
+            df = df.withColumn(vname + "_filtered", mean(col(vname)).over(window_spec))
+        elif ftype == "exponential":
+            df = df.withColumn(vname + "_filtered", expr(f"ewm({vname}, {fpv})"))
+        else:
+            df = df.withColumn(vname + "_filtered", col(vname))
+
+        df = df.withColumn(
+            vname + "_filtered", expr(f"coalesce({vname + '_filtered'}, {vname})")
+        )
+    return df
+
+# COMMAND ----------
+
+def get_X_poly(X, boolean_bias):
+    input_cols = X.columns
+    assembler = VectorAssembler(inputCols=input_cols, outputCol="features")
+    X_vector = assembler.transform(X)
+
+    poly = PolynomialExpansion(degree=2, inputCol="features", outputCol="polyFeatures")
+    X_poly = poly.transform(X_vector)
+
+    X_poly = X_poly.withColumn("polyFeatures", vector_to_array("polyFeatures"))
+
+    feature_count = len(input_cols) + (len(input_cols) * (len(input_cols) + 1)) // 2
+    expanded_cols = [f"poly{i}" for i in range(feature_count)]
+    X_poly = X_poly.select(*X.columns, *[X_poly.polyFeatures[i].alias(expanded_cols[i]) for i in range(feature_count)])
+
+    if boolean_bias:
+        X_poly = X_poly.withColumn("bias", lit(1))
+    
+    return 
+
+# COMMAND ----------
+
+# DBR Adapter function
+def get_model_data(path_url):
+    model_path = "/dbfs" + path_url
+    try:
+        with open(model_path, "rb") as file:
+            pickle_data = pickle.load(file)
+        return pickle_data
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+# COMMAND ----------
+
+def model_predict(config, data):
+    models = {}
+    for model_config in config["ml_models"]:
+        model_path = model_config["model_path"]
+        models[model_path] = get_model_data(model_path)
+        data = data.withColumn(model_config["dep_var"] + "_predicted", lit(None))
+
+    for timestamp in data.select("timestamp").distinct().collect():
+        timestamp_data = data.filter(col("timestamp") == timestamp["timestamp"])
+
+        for model_config in config["ml_models"]:
+            dep_var = model_config["dep_var"]
+            ind_vars = model_config["ind_vars"]
+            model_path = model_config["model_path"]
+            model_type = model_config["model_type"]
+
+            if dep_var not in timestamp_data.columns:
+                continue
+
+            input_data = [
+                timestamp_data.select(var + "_filtered").first()[0] for var in ind_vars
+            ]
+            input_data = Vectors.dense(input_data).reshape(1, -1)
+            model = models[model_path]
+            if model_type == "Linear":
+                predicted_value = model.predict(input_data)[0]
+            elif model_type == "Quadratic":
+                poly_input_data, poly = get_X_poly(input_data, False)
+                predicted_value = model.predict(poly_input_data)[0]
+            else:
+                raise ValueError(f"Unsupported model type: {model_type}")
+
+            data = data.withColumn(
+                dep_var + "_predicted",
+                when(
+                    col("timestamp") == timestamp["timestamp"], predicted_value
+                ).otherwise(col(dep_var + "_predicted")),
+            )
+
+    return data
+
+# COMMAND ----------
+
+def prediction_bias(data, config):
+    for model_config in config["ml_models"]:
+        dep_var = model_config["dep_var"]
+        data = data.withColumn(
+            dep_var + "_predictionBias",
+            col(dep_var + "_filtered") - col(dep_var + "_predicted"),
+        )
+    return data
+
+# COMMAND ----------
+
+def filter_bias(data, config):
+    for model_config in config["ml_models"]:
+        dep_var = model_config["dep_var"]
+        var_config = next(x for x in config["variables"] if x["name"] == dep_var)
+        prediction_error_filter = var_config.get("predictionErrorFilter", None)
+        if not prediction_error_filter:
+            continue
+
+        data = data.withColumn(
+            dep_var + "_predictionBiasFiltered",
+            expr(f"ewm({dep_var + '_predictionBias'}, {prediction_error_filter})"),
+        )
+        data = data.withColumn(
+            dep_var + "_predictionBiasFiltered",
+            expr(
+                f"coalesce({dep_var + '_predictionBiasFiltered'}, {dep_var + '_predictionBias'})"
+            ),
+        )
+    return data
+
+# COMMAND ----------
+
+def aggregate_values(data_df_exp, config):
+    sensors = [var["name"] for var in config["variables"]]
+
+    new_data = []
+    for timestamp in data_df_exp.select("timestamp").distinct().collect():
+        for sensor in sensors:
+            raw_col = f"{sensor}"
+            modified_col = f"{sensor}_modified"
+            filtered_col = f"{sensor}_filtered"
+            predicted_col = f"{sensor}_predicted"
+            bias_col = f"{sensor}_predictionBias"
+            bias_filtered_col = f"{sensor}_predictionBiasFiltered"
+            in_range_col = f"{sensor}_in_range"
+
+            raw_value = (
+                data_df_exp.filter(col("timestamp") == timestamp["timestamp"])
+                .select(raw_col)
+                .first()[0]
+                if raw_col in data_df_exp.columns
+                else None
+            )
+            modified_value = (
+                data_df_exp.filter(col("timestamp") == timestamp["timestamp"])
+                .select(modified_col)
+                .first()[0]
+                if modified_col in data_df_exp.columns
+                else None
+            )
+            filtered_value = (
+                data_df_exp.filter(col("timestamp") == timestamp["timestamp"])
+                .select(filtered_col)
+                .first()[0]
+                if filtered_col in data_df_exp.columns
+                else None
+            )
+            predicted_value = (
+                data_df_exp.filter(col("timestamp") == timestamp["timestamp"])
+                .select(predicted_col)
+                .first()[0]
+                if predicted_col in data_df_exp.columns
+                else None
+            )
+            bias_value = (
+                data_df_exp.filter(col("timestamp") == timestamp["timestamp"])
+                .select(bias_col)
+                .first()[0]
+                if bias_col in data_df_exp.columns
+                else None
+            )
+            bias_filtered_value = (
+                data_df_exp.filter(col("timestamp") == timestamp["timestamp"])
+                .select(bias_filtered_col)
+                .first()[0]
+                if bias_filtered_col in data_df_exp.columns
+                else None
+            )
+            in_range_value = (
+                data_df_exp.filter(col("timestamp") == timestamp["timestamp"])
+                .select(in_range_col)
+                .first()[0]
+                if in_range_col in data_df_exp.columns
+                else None
+            )
+
+            new_data.append(
+                {
+                    "timestamp": timestamp["timestamp"],
+                    "variable_name": sensor,
+                    "raw": raw_value,
+                    "rawModified": modified_value,
+                    "filtered": filtered_value,
+                    "predictedValue": predicted_value,
+                    "predictionBias": bias_value,
+                    "predictionBiaFilteredValue": bias_filtered_value,
+                    "in_range": in_range_value,
+                }
+            )
+
+    prep_output_df = spark.createDataFrame(new_data)
+    return prep_output_df
+
+# COMMAND ----------
+
+def preprocess(dataframe, config, start, end):
+    raw_df = resample_data(dataframe, RESAMPLE_RATE)
+
+    if end:
+        df = raw_df.filter((col("timestamp") >= start) & (col("timestamp") <= end))
+    else:
+        df = raw_df.filter(col("timestamp") >= start)
+
+    for var in config.get("variables"):
+        mod_df = modify_values_using_validity(
+            df.select("timestamp", var["name"]), var, maxLagSeconds, raw_df
+        )
+        mod_df = mod_df.withColumnRenamed(
+            var["name"], var["name"] + "_modified"
+        ).withColumnRenamed("in_range", var["name"] + "_in_range")
+        df = df.join(mod_df, on="timestamp", how="left")
+
+    df = filter_variable(df, config)
+    df = model_predict(config, df)
+    df = prediction_bias(df, config)
+    df = filter_bias(df, config)
+    ret_df = aggregate_values(df, config)
+
+    return ret_df
