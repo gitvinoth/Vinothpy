@@ -1,1 +1,191 @@
+# Databricks notebook source
+job_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+catalog_name = job_parameters["catalog"]
+schema_name = job_parameters["schema"]
 
+# COMMAND ----------
+
+spark.sql(f"use catalog {catalog_name}")
+spark.sql(f"create schema if not exists {schema_name}")
+spark.sql(f"use schema {schema_name}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ##Bronze Layer
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS pims_timeseries_raw(tag_id STRING COMMENT 'Sensor Id', value DOUBLE COMMENT 'Value for each sensor', timestamp TIMESTAMP COMMENT 'Timestamp at which the value is generated', quality STRING COMMENT 'Quality of the value', last_updated_date TIMESTAMP DEFAULT current_timestamp() COMMENT 'Auto generated timestamp when a row get inserted') USING delta COMMENT 'Raw sensor timeseries data from the customer stored in delta format' CLUSTER BY (tag_id, timestamp) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS filtered_timeseries_raw(id STRING COMMENT 'Current running optimizer id', tag_id STRING COMMENT 'sensor id', name STRING COMMENT 'sensor name', value DOUBLE COMMENT 'Timeseries filtered value for each sensor', predicted DOUBLE COMMENT 'Timeseries predicted value for each sensor', prediction_bias DOUBLE COMMENT 'Timeseries prediction_bias value for each sensor', prediction_bias_filtered DOUBLE COMMENT 'Timeseries prediction_bias_value for each sensor', timestamp TIMESTAMP COMMENT 'Timestamp corresponding to each sensor and value', last_updated_date TIMESTAMP DEFAULT current_timestamp() COMMENT 'Timestamp for when the measurement was last updated') USING delta COMMENT 'A table to store filter timeseries from optimizer preprocessor that includes filtered, predicted, prediction bias and prediction bias filtered values for the corresponding timestamp.' CLUSTER BY (tag_id, id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS optimizer(auto_run_id STRING COMMENT 'auto run id for each optimizer run', facility_id STRING COMMENT 'Plant id', facility_name STRING COMMENT 'plant name', deployment_unit_id STRING, deployment_unit_name STRING, deployment_unit_deployment_status STRING, system_id STRING, system_name STRING, objective_function_current_value DOUBLE COMMENT 'Overall current production', objective_function_optimized_value DOUBLE COMMENT 'Overall optimized production', objective_function_uom STRING COMMENT 'unit of measurement for overall production', runState STRING COMMENT 'Status of optimizer - Optimal/Infeasible/Offline', timestamp TIMESTAMP COMMENT 'Timestamp at which optimizer generated the data', controlled_optimization_variables_name STRING COMMENT 'Controlled variable sensor name', controlled_optimization_variables_sensor_id STRING COMMENT 'Controlled variable sensor id', manipulated_optimization_variables_name STRING COMMENT 'Manipulated variable sensor name', manipulated_optimization_variables_sensor_id STRING COMMENT 'Manipulated variable sensor id', controlled_optimization_variables_currentValue DOUBLE COMMENT 'Controlled variable sensors current value - from PIMS', controlled_optimization_variables_filteredValue DOUBLE COMMENT 'Controlled variable sensors filtered value', controlled_optimization_variables_isAtOperatorHighLimit BOOLEAN COMMENT 'Is value higher that operator limits', controlled_optimization_variables_isAtOperatorLowLimit BOOLEAN COMMENT 'Is value lower that operator low limits', controlled_optimization_variables_isOutsideOperatorHighLimit BOOLEAN COMMENT 'Is value outside that operator high limits', controlled_optimization_variables_isOutsideOperatorLowLimit BOOLEAN COMMENT 'Is value outside that operator low limits', controlled_optimization_variables_optimizedValueFiltered DOUBLE COMMENT 'Controlled variable optimized value', controlled_optimization_variables_status STRING COMMENT 'Status of controlled variable - Good/Bad', manipulated_optimization_variables_currentValue DOUBLE COMMENT 'Manipulated variable sensors current value - from PIMS', manipulated_optimization_variables_filteredValue DOUBLE COMMENT 'Manipulated variable sensors filtered value', manipulated_optimization_variables_isAtOperatorHighLimit BOOLEAN COMMENT 'Is manipulated variables value at operator high limits', manipulated_optimization_variables_isAtOperatorLowLimit BOOLEAN COMMENT 'Is manipulated variables value at operator low limits', manipulated_optimization_variables_isOutsideOperatorHighLimit BOOLEAN COMMENT 'Is manipulated variables value outside that operator high limits', manipulated_optimization_variables_isOutsideOperatorLowLimit BOOLEAN COMMENT 'Is manipulated variables value outside that operator low limits', manipulated_optimization_variables_optimizedValueFiltered DOUBLE COMMENT 'Manipulated variable optimized value', manipulated_optimization_variables_status STRING COMMENT 'Status of manipulated variable - Good/Bad', process_optimization_pipeline_id STRING, process_optimization_pipeline_name STRING, last_updated_date TIMESTAMP DEFAULT current_timestamp() COMMENT 'Auto generated timestamp when a row get inserted') USING delta COMMENT 'The optimizer postprocessor output provides detailed insights into auto optimization runs by the champion optimizer deployment unit. It includes objective function values, run state, timestamp, asset hierarchy, and static parameters. Additionally, it covers input parameters (initial conditions, operator limits, participation switch, status) and output results (optimized values and limit comparisons). This comprehensive information supports thorough analysis and informed decision-making in optimization processes.' CLUSTER BY (controlled_optimization_variables_sensor_id, manipulated_optimization_variables_sensor_id, auto_run_id, facility_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS phd_raw(tag_id STRING COMMENT 'Unique id for each static tag component', value DOUBLE COMMENT 'Data point for each tag', timestamp TIMESTAMP COMMENT 'Timestamp at which the data is generated', trans_date TIMESTAMP COMMENT 'Timestamp at which data is loaded in the source server', last_updated_date TIMESTAMP DEFAULT current_timestamp() COMMENT 'Auto generated timestamp when a row get added in the table') USING delta COMMENT 'A table logs raw data for static components, including a unique `tag_id`, `value`, data generation `timestamp`, data loading `trans_date`, and an auto-generated `last_updated_date` for row additions. It efficiently stores and tracks data points and their corresponding timestamps, ensuring accurate and timely information management.' CLUSTER BY (tag_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ##Silver Layer
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS timeseries_calculated(tag_id STRING COMMENT 'sensor name', value DOUBLE COMMENT 'The value of the sensor data measurement', timestamp TIMESTAMP COMMENT 'sensor timestamp', quality STRING COMMENT 'Good/bad', last_updated_date TIMESTAMP DEFAULT current_timestamp() COMMENT 'Timestamp for when the measurement was last updated') USING delta COMMENT 'The timeseries_calculated table in the process_optimization schema of the cordant_pro_pp_02 catalog contains data related to calculated values for various process optimization tags. The table includes information such as the tag ID, the calculated value, the timestamp of the calculation, the quality of the data, and the last updated date. This table is significant to the business as it provides insights into the performance and efficiency of different processes, allowing for data-driven decision making and continuous improvement.' CLUSTER BY (tag_id, timestamp, last_updated_date) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ##Lookup
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS time_monitor_auto_run(facility STRING, last_read_timestamp TIMESTAMP, last_updated_date TIMESTAMP DEFAULT current_timestamp()) USING delta CLUSTER BY (facility) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS time_monitor_simulation_run(facility STRING, last_read_timestamp TIMESTAMP, last_updated_date TIMESTAMP DEFAULT current_timestamp()) USING delta CLUSTER BY (facility) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS time_monitor_timeseries_calculated(facility STRING, last_read_timestamp TIMESTAMP COMMENT 'Timestamp used to track last read timestamp from timeseries calculated table for ingesting data into optimizer preprocessors', last_updated_date TIMESTAMP DEFAULT current_timestamp() COMMENT 'Auto generated timestamp when a new row get inserted') USING delta CLUSTER BY (last_read_timestamp) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS process_optimization_tags_list(tag_id STRING COMMENT 'Sensor id', aggregation_tags STRING COMMENT 'Aggregation tags list of PrO tags for optimizer to run on for generating tag-wise filtered timeseries and recommendation data') USING delta COMMENT 'List physical sensors and sensors used for calculation' CLUSTER BY (tag_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ##Asset & General
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS unit_of_measure(id BIGINT GENERATED BY DEFAULT AS IDENTITY, symbol STRING, name STRING, last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_unit_of_measure PRIMARY KEY (id)) USING DELTA CLUSTER BY (id, symbol, name) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS config_def(id BIGINT GENERATED BY DEFAULT AS IDENTITY, name STRING, definition MAP<STRING, STRING> COMMENT 'Contains JSON definitions of model components', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_config_def PRIMARY KEY (id)) USING DELTA CLUSTER BY (id, name) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS sensor_def(id BIGINT, name STRING, description STRING, uom_id BIGINT COMMENT 'FK to unit_of_measure.id', source_name STRING, type STRING, display_name STRING, parent_sd_id BIGINT, cd_id BIGINT, config MAP<STRING, DOUBLE> COMMENT 'Contains JSON data for sensor definitions', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_sensor_def PRIMARY KEY (id), CONSTRAINT fk_sensor_def_uom FOREIGN KEY (uom_id) REFERENCES unit_of_measure (id)) USING DELTA CLUSTER BY (id, source_name, type) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS timeseries(tag_id BIGINT COMMENT 'FK to sensor_def.id', value DOUBLE, timestamp TIMESTAMP, quality STRING, last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT fk_timeseries_sensor FOREIGN KEY (tag_id) REFERENCES sensor_def (id)) USING DELTA CLUSTER BY (tag_id, timestamp, last_updated_date) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS sensor_label_assignment(id BIGINT GENERATED BY DEFAULT AS IDENTITY, type STRING, tag_id BIGINT COMMENT 'FK to sensor_def.id', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_tag_type_assignment PRIMARY KEY (id), CONSTRAINT fk_tta_tag FOREIGN KEY (tag_id) REFERENCES sensor_def (id)) USING DELTA CLUSTER BY (id, type, tag_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS layouts(id BIGINT GENERATED BY DEFAULT AS IDENTITY, type STRING, name STRING, last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_layouts PRIMARY KEY (id)) USING DELTA CLUSTER BY (id, type, name) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS layout_sensor_assignment(id BIGINT GENERATED BY DEFAULT AS IDENTITY, l_id BIGINT COMMENT 'FK to layouts.id', tag_id BIGINT COMMENT 'FK to sensor_def.id', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_layout_sensor_assignment PRIMARY KEY (id), CONSTRAINT fk_lsa_layout FOREIGN KEY (l_id) REFERENCES layouts (id), CONSTRAINT fk_lsa_sensor FOREIGN KEY (tag_id) REFERENCES sensor_def (id)) USING DELTA CLUSTER BY (id, l_id, tag_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ##Model Configuration
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS analytic_components(id BIGINT GENERATED BY DEFAULT AS IDENTITY, name STRING, type STRING, comments STRING, modified TIMESTAMP, cd_id BIGINT COMMENT 'FK to config_def.id', config MAP<STRING, STRING> COMMENT 'JSON config', last_updated_date TIMESTAMP DEFAULT current_timestamp() , CONSTRAINT pk_analytic_components PRIMARY KEY (id), CONSTRAINT fk_ac_cd FOREIGN KEY (cd_id) REFERENCES config_def (id)) USING DELTA CLUSTER BY (id, name, type, cd_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS sensor_assignments(id BIGINT GENERATED BY DEFAULT AS IDENTITY, ac_id BIGINT COMMENT 'FK to analytic_components.id', tag_id BIGINT COMMENT 'FK to sensor_def.id', label STRING, cd_id BIGINT COMMENT 'FK to config_def.id', config MAP<STRING, STRING> COMMENT 'JSON config', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_sensor_assignments PRIMARY KEY (id), CONSTRAINT fk_sa_ac FOREIGN KEY (ac_id) REFERENCES analytic_components (id), CONSTRAINT fk_sa_tag FOREIGN KEY (tag_id) REFERENCES sensor_def (id), CONSTRAINT fk_sa_cd FOREIGN KEY (cd_id) REFERENCES config_def (id)) USING DELTA CLUSTER BY (id, ac_id, tag_id, cd_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS pipelines(id BIGINT GENERATED BY DEFAULT AS IDENTITY, created TIMESTAMP, stage STRING, name STRING, cd_id BIGINT COMMENT 'FK to config_def.id', config  MAP<STRING, STRING> COMMENT 'JSON config', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_pipelines PRIMARY KEY (id), CONSTRAINT fk_p_cd FOREIGN KEY (cd_id) REFERENCES config_def (id)) USING DELTA CLUSTER BY (id, stage, name, cd_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS analytics_pipeline_relations(id BIGINT GENERATED BY DEFAULT AS IDENTITY, p_id BIGINT COMMENT 'FK to pipelines.id', ac_id BIGINT COMMENT 'FK to analytic_components.id', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_analytics_pipeline_relations PRIMARY KEY (id), CONSTRAINT fk_apr_ac FOREIGN KEY (ac_id) REFERENCES analytic_components (id), CONSTRAINT fk_apr_p FOREIGN KEY (p_id) REFERENCES pipelines (id)) USING DELTA CLUSTER BY (id, p_id, ac_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS layout_pipeline_relations(id BIGINT GENERATED BY DEFAULT AS IDENTITY, p_id BIGINT COMMENT 'FK to pipelines.id', l_id BIGINT COMMENT 'FK to layouts.id', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_layout_pipeline_relations PRIMARY KEY (id), CONSTRAINT fk_lpr_layout FOREIGN KEY (l_id) REFERENCES layouts (id), CONSTRAINT fk_lpr_pipeline FOREIGN KEY (p_id) REFERENCES pipelines (id)) USING DELTA CLUSTER BY (id, p_id, l_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS analytic_runs(id BIGINT GENERATED BY DEFAULT AS IDENTITY, label STRING, name STRING, p_id BIGINT COMMENT 'FK to pipelines.id', updated TIMESTAMP, overrides MAP<STRING, STRING> COMMENT 'JSON config for any overrides', stage STRING, last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_analytic_runs PRIMARY KEY (id), CONSTRAINT fk_ar_pipeline FOREIGN KEY (p_id) REFERENCES pipelines (id)) USING DELTA CLUSTER BY (id, label, p_id, stage) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS analytic_runs_log(ar_id BIGINT COMMENT 'FK to analytic_runs.id', ac_id BIGINT COMMENT 'FK to analytic_components.id', job_status STRING, created TIMESTAMP, last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT fk_arl_ar FOREIGN KEY (ar_id) REFERENCES analytic_runs (id), CONSTRAINT fk_arl_ac FOREIGN KEY (ac_id) REFERENCES analytic_components (id)) USING DELTA CLUSTER BY (ar_id, ac_id, job_status) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS blob_master(id BIGINT GENERATED BY DEFAULT AS IDENTITY, blob  STRING, last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_blob_master PRIMARY KEY (id)) USING DELTA CLUSTER BY (id, blob) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS artifact_blob(id BIGINT GENERATED BY DEFAULT AS IDENTITY, ac_id BIGINT COMMENT 'FK to analytic_components.id', bm_id BIGINT COMMENT 'FK to blob_master.id', last_updated_date TIMESTAMP DEFAULT current_timestamp(), CONSTRAINT pk_artifact_blob PRIMARY KEY (id), CONSTRAINT fk_ab_ac FOREIGN KEY (ac_id) REFERENCES analytic_components (id), CONSTRAINT fk_ab_blob FOREIGN KEY (bm_id) REFERENCES blob_master (id)) USING DELTA CLUSTER BY (id, ac_id, bm_id) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
+
+# COMMAND ----------
+
+spark.sql(
+    f"CREATE TABLE IF NOT EXISTS analytic_components_relations(id BIGINT GENERATED BY DEFAULT AS IDENTITY, parent_ac_id BIGINT COMMENT 'FK to analytic_components.id', child_ac_id  BIGINT COMMENT 'FK to analytic_components.id', `group` STRING, CONSTRAINT pk_ac_relations PRIMARY KEY (id), CONSTRAINT fk_acr_parent FOREIGN KEY (parent_ac_id) REFERENCES analytic_components (id), CONSTRAINT fk_acr_child FOREIGN KEY (child_ac_id) REFERENCES analytic_components (id)) USING DELTA CLUSTER BY (id, parent_ac_id, child_ac_id, group) TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.columnMapping.mode' = 'name', 'delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true', 'delta.feature.allowColumnDefaults' = 'supported', 'delta.feature.columnMapping' = 'supported', 'delta.feature.deletionVectors' = 'supported', 'delta.feature.rowTracking' = 'supported', 'delta.feature.v2Checkpoint' = 'supported', 'delta.minReaderVersion' = '3', 'delta.minWriterVersion' = '7')"
+)
