@@ -1,0 +1,80 @@
+# Databricks notebook source
+import os
+import time
+
+from datetime import datetime
+from functools import reduce
+
+from delta.tables import DeltaTable
+from pyspark.sql import DataFrame
+
+from pyspark.sql.functions import col
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/write_delta
+
+# COMMAND ----------
+
+def main(catalog: str, tagret_table_name: str, checkpoint_path: str, checkpoint_reset_date: str) -> None:
+    """Function to load Bronze-layered pims timeseries data from the pims_timeseries_raw table into the Silver-layered timeseries_calculated table"""
+    try:
+        logger.info("Read the Bronze Layered streaming pims_timeseries_raw table")
+        df_pro_pims_raw_ingest = spark.readStream.option("skipChangeCommits","true").table(
+            f"{catalog}.process_optimization.pims_timeseries_raw"
+        ).drop('last_updated_date')
+        df_pro_pims_raw_ts = (df_pro_pims_raw_ingest
+                              .filter(col("last_updated_date") > checkpoint_reset_date)
+                              .withWatermark('timestamp', '30 seconds')
+                              .dropDuplicatesWithinWatermark(["tag_id", "value", "timestamp"])
+        )
+        logger.info("Get aggregation tags")
+        df_aggregation_tag = spark.read.table(
+            f"{catalog}.process_optimization.process_optimization_tags_list"
+        ).select("aggregation_tags")
+        logger.info("Remove nulls")
+        df_remove_null = df_aggregation_tag.filter(
+            df_aggregation_tag["aggregation_tags"].isNotNull()
+        )
+        logger.info("Join to get valid tags")
+        valid_tags = df_pro_pims_raw_ts.join(
+            df_remove_null,
+            df_pro_pims_raw_ts.tag_id == df_remove_null.aggregation_tags,
+            "left_anti",
+        )
+        logger.info("Write streaming data to target destination table")
+        valid_tags_write = write_stream_delta(valid_tags, checkpoint_path, tagret_table_name)
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        job_start_timestamp = datetime.now()
+        app_name = "dt_pims_enriched_timeseries_etl"
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        logger = configure_logger(app_name, date)
+        logger.info("Getting task parameters")
+        task_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        checkpoint_reset_date = task_parameters["checkpoint_reset_date"]
+        logger.info("Getting environment variables")
+        catalog = os.getenv("CATALOG")
+        container_name = os.getenv("CONTAINER")
+        storage_account = os.getenv("STORAGE_ACCOUNT")
+        tagret_table_name = f"{catalog}.process_optimization.timeseries_calculated"
+        checkpoint_path = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_physical_tags_checkpoint_v09/"
+        main(catalog, tagret_table_name, checkpoint_path, checkpoint_reset_date)
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/logs/{app_name}/{app_name}_{date}.log",
+        )
