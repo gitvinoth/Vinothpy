@@ -1,0 +1,200 @@
+# Databricks notebook source
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/decompress
+
+# COMMAND ----------
+
+import os
+from datetime import datetime
+
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import col, udf
+from pyspark.sql.types import StringType
+
+# COMMAND ----------
+
+def fetch_env_parameters(
+    secret_scope_var: str,
+    iothub_namespace_var: str,
+    iothub_name_var: str,
+    access_key_var: str,
+    access_value_var: str,
+    storage_ac_var: str,
+    container_var: str,
+) -> dict:
+    """This accepts env variable names, extracts corresponding values from job config, prepares the connection string and returns it"""
+
+    logger.info("Extracting Env variables from workflow config")
+
+    return {
+        "secret_scope_name": os.getenv(secret_scope_var),
+        "iothub_namespace_key": os.getenv(iothub_namespace_var),
+        "iothub_name_key": os.getenv(iothub_name_var),
+        "iothub_access_key": os.getenv(access_key_var),
+        "iothub_access_value_param": os.getenv(access_value_var),
+        "storage_account": os.getenv(storage_ac_var),
+        "container_name": os.getenv(container_var),
+    }
+
+# COMMAND ----------
+
+
+def set_iothub_connection_string(config_params_dict: dict) -> str:
+    """This is to create connection string based on secrets and environment variables & returns it"""
+
+    logger.info("Creating connection string of iot hub built in endpoint")
+    IOTHUB_NAMESPACE_NAME = dbutils.secrets.get(
+        config_params_dict["secret_scope_name"],
+        config_params_dict["iothub_namespace_key"],
+    )
+    IOTHUB_NAME = dbutils.secrets.get(
+        config_params_dict["secret_scope_name"], config_params_dict["iothub_name_key"]
+    )
+    IOTHUB_ACCESS_KEY = dbutils.secrets.get(
+        config_params_dict["secret_scope_name"], config_params_dict["iothub_access_key"]
+    )
+    IOTHUB_ACCESS_VALUE = dbutils.secrets.get(
+        config_params_dict["secret_scope_name"],
+        config_params_dict["iothub_access_value_param"],
+    )
+    connection_string = f"Endpoint=sb://{IOTHUB_NAMESPACE_NAME}.servicebus.windows.net/;SharedAccessKeyName={IOTHUB_ACCESS_KEY};SharedAccessKey={IOTHUB_ACCESS_VALUE};EntityPath={IOTHUB_NAME}"
+    return connection_string
+
+
+def read_iothub_stream(
+    checkpoint_reset_date: str,
+    config_params_dict: dict,
+    is_data_compressed: str,
+    module_id_property_key: str,
+    module_id_value: str,
+    opc_module: str,
+) -> DataFrame:
+    """This is to connect iothub built endpoint and extract streaming telemetry data"""
+
+    logger.info("Connecting to iot hub built endpoint to read device telemetry data.")
+    connection_string = set_iothub_connection_string(config_params_dict)
+    ehConf = {}
+    ehConf["eventhubs.connectionString"] = connection_string
+
+    ehConf[
+        "eventhubs.connectionString"
+    ] = sc._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt(connection_string)
+    streaming_df = (
+        spark.readStream.format("eventhubs")
+        .option("subscribe", "app_query_progress")
+        .options(**ehConf)
+        .load()
+    )
+    streaming_df = (
+        streaming_df.filter(col("enqueuedTime") > checkpoint_reset_date)
+        .withColumn("body", col("body").cast("string"))
+        .select("body", module_id_property_key)
+        .withColumnRenamed(module_id_value, "source_module")
+        .select("source_module", "body")
+    )
+    src_module_filter_data_df = streaming_df.filter(
+        col("source_module") == opc_module
+        )
+    logger.info(
+        "Check if data is compressed file or not"
+    )
+    if is_data_compressed == "Y":
+        logger.info("Decompressing the json data")
+        decompress_payload_udf = udf(decompress_payload, StringType())
+        final_streaming_df = src_module_filter_data_df.withColumn(
+            "decompressed_body", decompress_payload_udf(col("body"))
+        ).drop("body")
+    else:
+        final_streaming_df = src_module_filter_data_df
+    return final_streaming_df
+
+
+def write_to_landing_zone(
+    checkpoint_reset_date: str,
+    config_params_dict: dict,
+    is_data_compressed: str,
+    module_id_property_key: str,
+    module_id_value: str,
+    opc_module: str,
+    target_home_path: str,
+) -> None:
+    """This is to write QAFCO streaming data into landing zone ADLS location"""
+
+    logger.info("Writing QAFCO streaming data to landing zone ADLS.")
+    opc_landing_path = target_home_path + "opc" + "/input_data"
+    opc_checkpoint_path = (
+        target_home_path + "opc" + "/_opc_landing_checkpoint"
+    )
+    try:
+        streaming_df = read_iothub_stream(
+            checkpoint_reset_date,
+            config_params_dict,
+            is_data_compressed,
+            module_id_property_key,
+            module_id_value,
+            opc_module,
+        )
+        opc_stream = streaming_df.withColumnRenamed("decompressed_body", "body")
+        opc_stream.writeStream.format("json").trigger(
+            processingTime="10 seconds"
+        ).option("checkpointLocation", opc_checkpoint_path).option(
+            "maxRecordsPerFile", 1
+        ).outputMode(
+            "append"
+        ).start(
+            opc_landing_path
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        logger.info("Exiting write_to_landing_zone() function.")
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        task_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        is_data_compressed = task_parameters["is_data_compressed"]
+        module_id_property_key = task_parameters["module_id_property_key"]
+        opc_module = task_parameters["opc_module_name"]
+        checkpoint_reset_date = task_parameters["checkpoint_reset_date"]
+        module_id_value = module_id_property_key[module_id_property_key.find(".") + 1 :]
+        job_start_timestamp = datetime.now()
+        app_name = "de_opc_iothub_to_landing_zone"
+        date_var = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        logger = configure_logger(app_name, date_var)
+        config_params_dict = fetch_env_parameters(
+            "SECRET_SCOPE_NAME",
+            "IOTHUB_NAMESPACE_KEY",
+            "IOTHUB_NAME",
+            "IOTHUB_ACCESS_KEY",
+            "IOTHUB_ACCESS_VALUE_PARAM",
+            "STORAGE_ACCOUNT",
+            "CONTAINER",
+        )
+        logger.info("Started writing QAFCO streaming data to landing zone:")
+        storage_account = config_params_dict["storage_account"]
+        container_name = config_params_dict["container_name"]
+        target_home_path = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/qafco_out/landing_zone/"
+        write_to_landing_zone(
+            checkpoint_reset_date,
+            config_params_dict,
+            is_data_compressed,
+            module_id_property_key,
+            module_id_value,
+            opc_module,
+            target_home_path,
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        logger.info("Moving the log file to cloud storage.")
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date_var}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/qafco_out/logs/{app_name}_{date_var}.log",
+        )
