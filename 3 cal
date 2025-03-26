@@ -1,0 +1,111 @@
+# Databricks notebook source
+import os
+
+from datetime import datetime
+
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    col,
+    lit,
+    max,
+    sum,
+    when,
+)
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/calculation_logic
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/write_delta
+
+# COMMAND ----------
+
+def a3_nh3(
+    df_pro_pims_raw_ts: DataFrame,
+    checkpoint_path_A3_NH3: str,
+    checkpoint_path_A3_NH3_2: str,
+    target_table_name: str,
+) -> None:
+    """
+    Function to calculate the A3 NH3 and A3 NH3_2 rates and writeStream
+    the corresponding PySpark Data Frame objects into a Delta Table.
+    """
+    try:
+        logger.info("Respectively calculating A3 tags")
+        A3_NH3_df = get_ammonia_rate(
+            df_pro_pims_raw_ts,
+            ["F0807.PV"],
+            "A3_NH3Rate",
+        ).withColumn("value", col("value") * 1000)
+        df_pro_pims_nh3_v2_ts = df_pro_pims_raw_ts.withColumn(
+            "value",
+            when(col("tag_id") == "FIC1004.PV", col("value") / 1000).otherwise(
+                col("value")
+            ),
+        )
+        A3_NH3_2_df = get_ammonia_rate(
+            df_pro_pims_nh3_v2_ts,
+            ["F0807.PV", "FIC1004.PV"],
+            "A3_NH3Rate2",
+        ).withColumn("value", col("value") * 1000)
+        logger.info("Upserting streaming data to target destination table")
+        A3_Nh3_write = write_stream_delta(
+            A3_NH3_df, checkpoint_path_A3_NH3, target_table_name
+        )
+        A3_Nh3_2_write = write_stream_delta(
+            A3_NH3_2_df, checkpoint_path_A3_NH3_2, target_table_name
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        job_start_timestamp = datetime.now()
+        app_name = "dt_pims_enriched_timeseries_etl_a3"
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        logger = configure_logger(app_name, date)
+        logger.info("Getting task parameters")
+        task_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        checkpoint_reset_date = task_parameters["checkpoint_reset_date"]
+        logger.info("Getting environment variables")
+        catalog = os.getenv("CATALOG")
+        container_name = os.getenv("CONTAINER")
+        storage_account = os.getenv("STORAGE_ACCOUNT")
+        target_table_name = f"{catalog}.process_optimization.timeseries_calculated"
+        checkpoint_path_A3_NH3 = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A3_NH3_calculated_tags_checkpoint_v11/"
+        checkpoint_path_A3_NH3_2 = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A3_NH3_2_calculated_tags_checkpoint_v00/"
+        logger.info("Read the Bronze Layered streaming pims_timeseries_raw table")
+        df_pro_pims_raw_ingest = spark.readStream.table(
+            f"{catalog}.process_optimization.pims_timeseries_raw"
+        )
+        df_pro_pims_raw_ts = (
+            df_pro_pims_raw_ingest.filter(
+                (col("last_updated_date") > checkpoint_reset_date)
+            )
+            .withWatermark("timestamp", "30 seconds")
+            .dropDuplicatesWithinWatermark(["tag_id", "value", "timestamp"])
+        )
+        logger.info("Executing A3 NH3 function")
+        a3_nh3(
+            df_pro_pims_raw_ts,
+            checkpoint_path_A3_NH3,
+            checkpoint_path_A3_NH3_2,
+            target_table_name,
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/logs/{app_name}/{app_name}_{date}.log",
+        )
