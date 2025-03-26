@@ -1,0 +1,84 @@
+# Databricks notebook source
+import os
+
+from datetime import datetime
+
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import col, current_timestamp, lit
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+def main(catalog: str, checkpoint_reset_date: str, checkpoint_path: str) -> None:
+    """Function to process Silver-layered pims timeseries data and load into the Gold-layered timeseries table"""
+    try:
+        logger.info("Read timeseries calculated table")
+        df_pro_pims_raw_ingest = (
+            spark.readStream.option("ignoreDeletes", "true")
+            .option("schemaTrackingLocation", checkpoint_path)
+            .table(f"{catalog}.process_optimization.timeseries_calculated")
+        )
+        
+        df_pro_pims_timeseries_enriched = (df_pro_pims_raw_ingest
+            .filter((col("last_updated_date") > checkpoint_reset_date))
+            .withWatermark('timestamp', '4 minutes')
+            .dropDuplicatesWithinWatermark(["tag_id", "value", "timestamp"])
+        )
+        logger.info("Read tag_metadata_extended table, current values")
+        df_pro_tag_metadata_extended = (
+            spark.read.table(f"{catalog}.process_optimization.tag_metadata_extended")
+            .filter(col("source_type") == "current")
+            .select("measurement_set_uuid", "source_tag_id")
+        )
+        logger.info("Join tables on equal tag_id values")
+        df_pro_pims_meta_joined = df_pro_pims_timeseries_enriched.join(
+            df_pro_tag_metadata_extended,
+            df_pro_pims_timeseries_enriched["tag_id"]
+            == df_pro_tag_metadata_extended["source_tag_id"],
+        )
+        logger.info("Select final columns")
+        df_pro_timeseries_uuid = df_pro_pims_meta_joined.select(
+            "measurement_set_uuid",
+            "value",
+            "timestamp",
+            "quality",
+            lit(current_timestamp()).alias("last_updated_date"),
+        )
+        logger.info("Write streaming data to destination table")
+        df_pro_timeseries_uuid.writeStream.trigger(
+            processingTime="10 seconds"
+        ).outputMode("append").option("checkpointLocation", checkpoint_path).toTable(
+            f"{catalog}.process_optimization.timeseries"
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        job_start_timestamp = datetime.now()
+        app_name = "dt_pims_timeseries_etl"
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        logger = configure_logger(app_name, date)
+        logger.info("Get environment variables")
+        catalog = os.getenv("CATALOG")
+        container_name = os.getenv("CONTAINER")
+        storage_account = os.getenv("STORAGE_ACCOUNT")
+        task_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        checkpoint_reset_date = task_parameters["checkpoint_reset_date"]
+        checkpoint_path = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/pims_timeseries_checkpoint_v00/"
+        main(catalog, checkpoint_reset_date, checkpoint_path)
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        job_end_timestamp = datetime.now()
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/logs/{app_name}/{app_name}_{date}.log",
+        )
