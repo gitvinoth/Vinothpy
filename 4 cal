@@ -1,0 +1,300 @@
+# Databricks notebook source
+import os
+
+from datetime import datetime
+
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    col,
+    lit,
+    max,
+    sum,
+    when,
+    window,
+)
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/calculation_logic
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/write_delta
+
+# COMMAND ----------
+
+def a4_inerts_conc(df, batch_id, target_table_name):
+    filter_tags = df.filter(
+        (
+            col("tag_id").isin(
+                "AI08004_2.PV", "AI08004_3.PV", "AI08003_1.PV",
+            )
+        )
+    )
+    timeseries_raw = filter_tags.groupBy("tag_id", "value", "last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    max_ts = timeseries_raw.groupBy("last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    tag_id_timeseries = (
+        timeseries_raw.groupBy("last_updated_date")
+        .pivot(
+            "tag_id",
+            ["AI08004_2.PV", "AI08004_3.PV", "AI08003_1.PV"],
+        )
+        .agg(max("value"))
+        .withColumnRenamed("AI08004_2.PV", "tagAI080042")
+        .withColumnRenamed("AI08004_3.PV", "tagAI080043")
+        .withColumnRenamed("AI08003_1.PV", "tagAI080041")
+    )
+    a4_inerts_conc_df = (
+        tag_id_timeseries.join(max_ts, on="last_updated_date")
+        .withColumn(
+            "value",
+            (
+                100.0
+                - col("tagAI080042")
+                - col("tagAI080043")
+                - col("tagAI080041")
+            ),
+        )
+        .select(
+            lit("A4_Inerts_Conc").alias("tag_id"),
+            "value",
+            "timestamp",
+            lit("Good").alias("quality"),
+        )
+    )
+    write_batch_delta(a4_inerts_conc_df, 'append', target_table_name)
+
+# COMMAND ----------
+
+def a4_sgc_fresh(df, batch_id, target_table_name):
+    filter_tags = df.filter(
+        (
+            col("tag_id").isin(
+                "FI07004.PV", "FI11002.PV",
+            )
+        )
+    )
+    timeseries_raw = filter_tags.groupBy("tag_id", "value", "last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    max_ts = timeseries_raw.groupBy("last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    tag_id_timeseries = (
+        timeseries_raw.groupBy("last_updated_date")
+        .pivot(
+            "tag_id",
+            ["FI07004.PV", "FI11002.PV"],
+        )
+        .agg(max("value"))
+        .withColumnRenamed("FI07004.PV", "tagFI07004")
+        .withColumnRenamed("FI11002.PV", "tagFI11002")
+    )
+    a4_sgc_fresh_df = (
+        tag_id_timeseries.join(max_ts, on="last_updated_date")
+        .withColumn(
+            "value",
+            (
+                col("tagFI07004")
+                - col("tagFI11002")
+            ),
+        )
+        .select(
+            lit("A4_SGC_Fresh").alias("tag_id"),
+            "value",
+            "timestamp",
+            lit("Good").alias("quality"),
+        )
+    )
+    write_batch_delta(a4_sgc_fresh_df, 'append', target_table_name)
+
+# COMMAND ----------
+
+def a4_pdi03035(df, batch_id, target_table_name):
+    filter_tags = df.filter(
+        (
+            col("tag_id").isin(
+                "PIC02001.PV", "PI03030.PV",
+            )
+        )
+    )
+    timeseries_raw = filter_tags.groupBy("tag_id", "value", "last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    max_ts = timeseries_raw.groupBy("last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    tag_id_timeseries = (
+        timeseries_raw.groupBy("last_updated_date")
+        .pivot(
+            "tag_id",
+            ["PIC02001.PV", "PI03030.PV"],
+        )
+        .agg(max("value"))
+        .withColumnRenamed("PIC02001.PV", "tagPIC02001")
+        .withColumnRenamed("PI03030.PV", "tagPI03030")
+    )
+    a4_pdi03035_df = (
+        tag_id_timeseries.join(max_ts, on="last_updated_date")
+        .withColumn(
+            "value",
+            (
+                col("tagPIC02001")
+                - col("tagPI03030")
+            ),
+        )
+        .select(
+            lit("PDI03035.PV").alias("tag_id"),
+            "value",
+            "timestamp",
+            lit("Good").alias("quality"),
+        )
+    )
+    write_batch_delta(a4_pdi03035_df, 'append', target_table_name)
+
+# COMMAND ----------
+
+def a4_pa_comb_sy(df, batch_id, target_table_name):
+    filter_tags = df.filter(
+        (
+            col("tag_id").isin(
+                "FIC03004.PV", "FIC03009.PV",
+            )
+        )
+    )
+    timeseries_raw = filter_tags.groupBy("tag_id", "value", "last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    max_ts = timeseries_raw.groupBy("last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    tag_id_timeseries = (
+        timeseries_raw.groupBy("last_updated_date")
+        .pivot(
+            "tag_id",
+            ["FIC03004.PV", "FIC03009.PV"],
+        )
+        .agg(max("value"))
+        .withColumnRenamed("FIC03004.PV", "tagFIC03004")
+        .withColumnRenamed("FIC03009.PV", "tagFIC03009")
+    )
+    a4_pa_comb_sy_df = (
+        tag_id_timeseries.join(max_ts, on="last_updated_date")
+        .withColumn(
+            "value",
+            (
+                col("tagFIC03004")
+                + col("tagFIC03009")
+            ),
+        )
+        .select(
+            lit("A4_PA_COMB_SY").alias("tag_id"),
+            "value",
+            "timestamp",
+            lit("Good").alias("quality"),
+        )
+    )
+    write_batch_delta(a4_pa_comb_sy_df, 'append', target_table_name)
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        job_start_timestamp = datetime.now()
+        app_name = "dt_pims_enriched_timeseries_etl_A4"
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        logger = configure_logger(app_name, date)
+        logger.info("Getting task parameters")
+        task_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        checkpoint_reset_date =  task_parameters["checkpoint_reset_date"]
+        logger.info("Getting environment variables")
+        catalog = os.getenv("CATALOG")
+        container_name = os.getenv("CONTAINER")
+        storage_account = os.getenv("STORAGE_ACCOUNT")
+        target_table_name = f"{catalog}.process_optimization.timeseries_calculated"
+        checkpoint_path_A4_Inerts_Concs = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A4_Inerts_Conc_checkpoint_v00/"
+        checkpoint_path_A4_SGC_Fresh = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A4_SGC_Fresh_checkpoint_v00/"
+        checkpoint_path_A4_PDI03035 = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A4_PDI03035_checkpoint_v00/"
+        checkpoint_path_A4_PA_COMB_SY = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A4_PA_COMB_SY_checkpoint_v00/"
+        checkpoint_path_A4_ROT_Nan_Max = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A4_ROT_Nan_Max_checkpoint_v00/"
+        checkpoint_path_A4_NH3 = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A4_NH3_calculated_tags_checkpoint_v00/"
+        checkpoint_path_A4_NH3_NET = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A4_NH3_NET_calculated_tags_checkpoint_v00/"
+        logger.info("Read the Bronze Layered streaming pims_timeseries_raw table")
+        df_pro_pims_raw_ingest = spark.readStream.table(
+                f"{catalog}.process_optimization.pims_timeseries_raw"
+        )
+        df_pro_pims_raw_ts = (df_pro_pims_raw_ingest
+            .filter((col("last_updated_date") > checkpoint_reset_date))
+            .withWatermark('timestamp', '30 seconds')
+            .dropDuplicatesWithinWatermark(["tag_id", "value", "timestamp"])
+        )
+        logger.info("Respectively calculating A4 tags")
+        A4_ROT_Nan_Max_df = get_maximum(
+            df_pro_pims_raw_ts.filter(~(col("value").isNaN())),
+            [
+                "PDI07008A.PV",
+                "PDI07008B.PV",
+                "PDI07008C.PV",
+            ],
+            "PDI07008.MAX",
+        )
+        A4_NH3_df = get_ammonia_rate(
+            df_pro_pims_raw_ts,
+            ["FI08007.PV"],
+            "A4_NH3Rate",
+        ).withColumn("value", col("value") * 1000)
+
+        df_pro_pims_nh3_net_ts = df_pro_pims_raw_ts.withColumn(
+            "value",
+            when(col("tag_id") == "FI09012.PV", col("value") * 660 / 1000).otherwise(
+                col("value")
+            ),
+        )
+        A4_NH3_NET_df = get_ammonia_rate(
+            df_pro_pims_nh3_net_ts,
+            ["FY21001.PV", "FI09012.PV"],
+            "A4_NH3Rate_Net",
+        ).withColumn("value", col("value") * 1000)
+
+        logger.info("Upserting streaming data to target destination table")
+        A4_ROT_Nan_Max_write = write_stream_delta(
+            A4_ROT_Nan_Max_df, checkpoint_path_A4_ROT_Nan_Max, target_table_name
+        )
+        A4_Nh3_write = write_stream_delta(A4_NH3_df, checkpoint_path_A4_NH3, target_table_name)
+        A4_Nh3_NET_write = write_stream_delta(A4_NH3_NET_df, checkpoint_path_A4_NH3_NET, target_table_name)
+        df_pro_pims_raw_ts.writeStream.trigger(
+            processingTime="10 seconds"
+        ).foreachBatch(lambda batch, batch_id: a4_inerts_conc(batch, batch_id, target_table_name)).option(
+            "checkpointLocation", checkpoint_path_A4_Inerts_Concs
+        ).start()
+        df_pro_pims_raw_ts.writeStream.trigger(
+            processingTime="10 seconds"
+        ).foreachBatch(lambda batch, batch_id: a4_sgc_fresh(batch, batch_id, target_table_name)).option(
+            "checkpointLocation", checkpoint_path_A4_SGC_Fresh
+        ).start()
+        df_pro_pims_raw_ts.writeStream.trigger(
+            processingTime="10 seconds"
+        ).foreachBatch(lambda batch, batch_id: a4_pdi03035(batch, batch_id, target_table_name)).option(
+            "checkpointLocation", checkpoint_path_A4_PDI03035
+        ).start()
+        df_pro_pims_raw_ts.writeStream.trigger(
+            processingTime="10 seconds"
+        ).foreachBatch(lambda batch, batch_id: a4_pa_comb_sy(batch, batch_id, target_table_name)).option(
+            "checkpointLocation", checkpoint_path_A4_PA_COMB_SY
+        ).start()
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/logs/{app_name}/{app_name}_{date}.log",
+        )
