@@ -1,0 +1,182 @@
+# Databricks notebook source
+# DBTITLE 1,Importing required packages
+import os
+from datetime import datetime
+from pyspark.sql.functions import from_json, col, explode, split
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    StringType,
+    TimestampType,
+    DoubleType,
+)
+from pyspark.sql import DataFrame
+
+spark.conf.set("spark.sql.files.ignoreMissingFiles", True)
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+# DBTITLE 1,ETL of PrO OPC DataFrame to Bronze Layer
+def pro_opc_to_bronze_etl(
+    catalog_name: str,
+    opc_landing: str,
+    opc_checkpoint: str,
+    pro_optimize_opc_checkpoint: str,
+    checkpoint_reset_date: str,
+) -> None:
+    try:
+        opc_schema = StructType(
+            [
+                StructField("source_module", StringType(), True),
+                StructField("body", StringType(), True),
+            ]
+        )
+
+        opc_df_input = (
+            spark.readStream.format("cloudFiles")
+            .option("cloudFiles.format", "json")
+            .option("cloudFiles.schemaLocation", opc_checkpoint)
+            .schema(opc_schema)
+            .load(opc_landing)
+        )
+
+        opc_df_input.createOrReplaceTempView("opc_df_tab_input")
+
+        logger.info("Prepared input OPC input dataframe.")
+
+        logger.info("Preparing input qafco-opc dataframe.")
+
+        opc_body_schema = StructType(
+            [
+                StructField("nodeId", StringType(), True),
+                StructField("displayName", StringType(), True),
+                StructField(
+                    "value",
+                    StructType(
+                        [
+                            StructField("value", DoubleType(), True),
+                            StructField("timestamp", StringType(), True),
+                            StructField("statusCode", StringType(), True),
+                        ]
+                    ),
+                ),
+            ]
+        )
+
+        opc_df_body = spark.sql(
+            """
+            select concat(c1,'}') as body from ( select explode(split(replace(replace(body,'[',''),']',''),"},")) as c1 from opc_df_tab_input)
+            """
+        )
+
+        opc_df_full = (
+            opc_df_body.withColumn("data", from_json(col("body"), opc_body_schema))
+            .selectExpr(
+                "data.displayName",
+                "data.value.value",
+                "data.value.timestamp",
+                "data.value.statusCode",
+            )
+            .selectExpr(
+                "displayName as tag_id",
+                "value",
+                "timestamp",
+                "statusCode as quality",
+            )
+            .selectExpr(
+                "tag_id",
+                "value",
+                "cast(timestamp as timestamp) as timestamp",
+                "quality",
+            )
+        )
+        latest_opc_data_df = opc_df_full.filter(
+            col("timestamp") > checkpoint_reset_date
+        )
+
+        latest_opc_data_df.createOrReplaceTempView("opc_df_tab_full")
+
+        logger.info(
+            "Parsed/transformed input OPC dataframe & identified individual columns."
+        )
+
+        process_optimization_opc_bronze_table = (
+            f"{catalog_name}.process_optimization.pims_timeseries_raw"
+        )
+
+        logger.info("Preparing OPC: Process Optimization input dataframe.")
+
+        pro_optimize_opc_df = spark.sql(
+            f"""
+                select opc_main.* from opc_df_tab_full opc_main JOIN {catalog_name}.process_optimization.process_optimization_tags_list pro_optimize_tags
+                ON opc_main.tag_id = pro_optimize_tags.tag_id
+            """
+        )
+
+        logger.info("Started loading to OPC: Process Optimization bronze layer table.")
+
+        pro_optimize_opc_df.writeStream.format("delta").trigger(
+            processingTime="10 seconds"
+        ).outputMode("append").option(
+            "checkpointLocation", pro_optimize_opc_checkpoint
+        ).table(
+            process_optimization_opc_bronze_table
+        )
+
+        logger.info(
+            "Loading to OPC: Process optimization bronze layer table is in progress!"
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        job_start_timestamp = datetime.now()
+        app_name = os.path.basename(
+            dbutils.notebook.entry_point.getDbutils()
+            .notebook()
+            .getContext()
+            .notebookPath()
+            .get()
+        )
+        date_var = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        logger = configure_logger(app_name, date_var)
+
+        storage_account = os.getenv("STORAGE_ACCOUNT")
+        container_name = os.getenv("CONTAINER")
+        catalog_name = os.getenv("CATALOG")
+
+        logger.info("Extracted env params:")
+        task_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        checkpoint_reset_date = task_parameters["checkpoint_reset_date"]
+        logger.info("Extracted job params:")
+
+        opc_landing = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/qafco_out/landing_zone/opc/input_data"
+        opc_checkpoint = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/qafco_out/landing_zone/opc/_opc_landing_checkpoint"
+
+        pro_optimize_opc_checkpoint = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/qafco_out/bronze_layer/opc/process_optimization/_pro_optimize_opc_bronze_checkpoint"
+
+        pro_opc_to_bronze_etl(
+            catalog_name,
+            opc_landing,
+            opc_checkpoint,
+            pro_optimize_opc_checkpoint,
+            checkpoint_reset_date,
+        )
+
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        logger.info("Exiting process optimization bronze layer table load.")
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date_var}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/qafco_out/logs/{app_name}_{date_var}.log",
+        )
