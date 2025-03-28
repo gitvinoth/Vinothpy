@@ -1,0 +1,173 @@
+# Databricks notebook source
+import os
+
+from datetime import datetime
+
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    col,
+    lit,
+    max,
+    sum
+)
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/calculation_logic
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/write_delta
+
+# COMMAND ----------
+
+def a6_h2n2(df, batch_id, tagret_table_name):
+    filter_tags = df.filter(
+        (
+            col("tag_id").isin(
+                "3616AI03171.DACA.PV", "3616FI06021.DACA.PV", "3616PDI07282.DACA.PV"
+            )
+        )
+    )
+    timeseries_raw = filter_tags.groupBy("tag_id", "value", "last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    max_ts = timeseries_raw.groupBy("last_updated_date").agg(
+        max("timestamp").alias("timestamp")
+    )
+    tag_id_timeseries = (
+        timeseries_raw.groupBy("last_updated_date")
+        .pivot(
+            "tag_id",
+            ["3616AI03171.DACA.PV", "3616FI06021.DACA.PV", "3616PDI07282.DACA.PV"],
+        )
+        .agg(max("value"))
+        .withColumnRenamed("3616AI03171.DACA.PV", "tag3616AI03171")
+        .withColumnRenamed("3616FI06021.DACA.PV", "tag3616FI06021")
+        .withColumnRenamed("3616PDI07282.DACA.PV", "tag3616PDI07282")
+    )
+    result = (
+        tag_id_timeseries.join(max_ts, on="last_updated_date")
+        .withColumn(
+            "value",
+            (
+                col("tag3616AI03171") * 0.3910517336
+                + col("tag3616FI06021") * 0.0000124679
+                + col("tag3616PDI07282") * -0.0069501996
+            )
+            + 5,
+        )
+        .select(
+            lit("H2N2Ratio").alias("tag_id"),
+            "value",
+            "timestamp",
+            lit("Good").alias("quality"),
+        )
+    )
+    h2n2_df = get_h2n2_ratio(result, 2.9024670050253776)
+    write_batch_delta(h2n2_df, 'append', tagret_table_name)
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        job_start_timestamp = datetime.now()
+        app_name = "dt_pims_enriched_timeseries_etl_a6"
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        logger = configure_logger(app_name, date)
+        logger.info("Getting task parameters")
+        task_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        checkpoint_reset_date =  task_parameters["checkpoint_reset_date"]
+        logger.info("Getting environment variables")
+        catalog = os.getenv("CATALOG")
+        container_name = os.getenv("CONTAINER")
+        storage_account = os.getenv("STORAGE_ACCOUNT")
+        tagret_table_name = f"{catalog}.process_optimization.timeseries_calculated"
+        checkpoint_path_A6_H2N2 = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A6_H2N2_calculated_tags_checkpoint_v09/"
+        checkpoint_path_A6_ROT = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_ROT_calculated_tags_checkpoint_v09/"
+        checkpoint_path_A6_ROT_avg = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A6_ROT_avg_checkpoint_v09/"
+        checkpoint_path_A6_ROT_median = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A6_ROT_median_checkpoint_v09/"
+        checkpoint_path_A6_ROT_Max = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A6_ROT_Max_checkpoint_v09/"
+        checkpoint_path_A6_NH3 = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/po/checkpoints/process_optimization/_pims_timeseries_A6_NH3_calculated_tags_checkpoint_v09/"
+        logger.info("Read the Bronze Layered streaming pims_timeseries_raw table")
+        df_pro_pims_raw_ingest = spark.readStream.table(
+                f"{catalog}.process_optimization.pims_timeseries_raw"
+        )
+        df_pro_pims_raw_ts = (df_pro_pims_raw_ingest
+            .filter((col("last_updated_date") > checkpoint_reset_date))
+            .withWatermark('timestamp', '30 seconds')
+            .dropDuplicatesWithinWatermark(["tag_id", "value", "timestamp"])
+        )
+        logger.info("Respectively calculating A6 tags")
+        A6_ROT_df = get_average(
+            df_pro_pims_raw_ts,
+            ["3616TX03149.PV", "3616TX03150.PV"],
+            "A6_ROT",
+        )
+        A6_ROT_Max_df = get_maximum(
+            df_pro_pims_raw_ts,
+            [
+                "3616TI03144.DACA.PV",
+                "3616TI03145.DACA.PV",
+                "3616TI03146.DACA.PV",
+                "3616TI03147.DACA.PV",
+                "3616TI03148.DACA.PV",
+            ],
+            "A6_ROT_Max",
+        )
+        A6_ROT_Median_df = get_median(
+            df_pro_pims_raw_ts,
+            [
+                "3616TI03144.DACA.PV",
+                "3616TI03145.DACA.PV",
+                "3616TI03146.DACA.PV",
+                "3616TI03147.DACA.PV",
+                "3616TI03148.DACA.PV",
+            ],
+            "A6_ROT_Median",
+        )
+        A6_ROT_Avg_df = get_average(
+            df_pro_pims_raw_ts,
+            [
+                "3616TI03144.DACA.PV",
+                "3616TI03145.DACA.PV",
+                "3616TI03146.DACA.PV",
+                "3616TI03147.DACA.PV",
+                "3616TI03148.DACA.PV",
+            ],
+            "A6_ROT_Avg",
+        )
+        A6_NH3_df = get_ammonia_rate(
+            df_pro_pims_raw_ts,
+            ["3616FI09001.DACA.PV", "3616FI09021.DACA.PV"],
+            "A6_NH3Rate",
+        )
+        logger.info("Upserting streaming data to target destination table")
+        A6_Nh3_write = write_stream_delta(A6_NH3_df, checkpoint_path_A6_NH3, tagret_table_name)
+        A6_ROT_write = write_stream_delta(A6_ROT_df, checkpoint_path_A6_ROT, tagret_table_name)
+        A6_ROT_Avg_write = write_stream_delta(
+            A6_ROT_Avg_df, checkpoint_path_A6_ROT_avg, tagret_table_name
+        )
+        A6_ROT_Median_write = write_stream_delta(
+            A6_ROT_Median_df, checkpoint_path_A6_ROT_median, tagret_table_name
+        )
+        A6_ROT_Max_write = write_stream_delta(
+            A6_ROT_Max_df, checkpoint_path_A6_ROT_Max, tagret_table_name
+        )
+        df_pro_pims_raw_ts.writeStream.trigger(
+            processingTime="10 seconds"
+        ).foreachBatch(lambda batch, batch_id: a6_h2n2(batch, batch_id, tagret_table_name)).option(
+            "checkpointLocation", checkpoint_path_A6_H2N2
+        ).start()
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/logs/{app_name}/{app_name}_{date}.log",
+        )
