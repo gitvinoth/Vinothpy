@@ -1,0 +1,104 @@
+# Databricks notebook source
+import os
+
+from datetime import datetime
+
+from pyspark.sql.functions import col, struct, to_json
+
+# COMMAND ----------
+
+# MAGIC %run ../helpers/logger
+
+# COMMAND ----------
+
+def load_eventhub_stream(
+    topic: str,
+    eh_ns_name: str,
+    eh_access_key: str,
+    filter_timestamp: str,
+    catalog: str,
+    eh_checkpoint_path: str,
+) -> None:
+    """
+    PySpark function to ingest streaming data from the pims_timeseries_raw Delta table,
+    perform transformations on this ingested table, and finally, writeStream the transformed Delta table into Azure EventHubs.
+    """
+    try:
+        logger.info("Configure EventHubs connection string")
+        ehConf = {}
+        eh_access_key = dbutils.secrets.get(
+            scope="cordant_qafco", key=f"{eh_access_key}"
+        )
+        connectionString = f"Endpoint=sb://{eh_ns_name}.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey={eh_access_key};EntityPath={topic}"
+        ehConf["eventhubs.connectionString"] = connectionString
+        ehConf[
+            "eventhubs.connectionString"
+        ] = sc._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt(connectionString)
+
+        logger.info("Read stream the pims_timeseries_raw table")
+        df_pims_ts_raw = spark.readStream.table(
+            f"{catalog}.reliability.pims_timeseries_raw"
+        ).filter(
+            (col("timestamp") > filter_timestamp)
+            & (col("timestamp") < "2099-12-31 23:59:59")
+        )
+
+        logger.info("Select and rename required columns")
+        df_c3_type = df_pims_ts_raw.select(
+            col("tag_id").alias("tagID"),
+            col("timestamp").alias("tagTimestamp"),
+            col("value").alias("tagValue"),
+        )
+
+        logger.info("Convert Delta table to Json struct and cast to binary format")
+        df_pims_binary = df_c3_type.select(
+            to_json(struct("*")).alias("body").cast("binary")
+        )
+
+        logger.info(
+            "Write stream the transformed pims_timeseries_raw table to Azure EventHubs"
+        )
+        eh_write_stream_op = (
+            df_pims_binary.writeStream.format("eventhubs")
+            .outputMode("append")
+            .options(**ehConf)
+            .option("checkpointLocation", eh_checkpoint_path)
+            .start()
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    try:
+        job_start_timestamp = datetime.now()
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+        app_name = "dl_reliability_pims_c3_eh_stream"
+        logger = configure_logger(app_name, date)
+        job_parameters = dbutils.notebook.entry_point.getCurrentBindings()
+        eh_access_key = job_parameters["eh_access_key"]
+        filter_timestamp = job_parameters["filter_timestamp"]
+        eh_ns_name = os.getenv("EH_NS_NAME")
+        topic = os.getenv("TOPIC_RELIABILITY")
+        catalog = os.getenv("CATALOG")
+        container_name = os.getenv("CONTAINER")
+        storage_account = os.getenv("STORAGE_ACCOUNT")
+        eh_checkpoint_path = f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/reliability/pims_timeseries/_checkpoint_v3"
+        load_eventhub_stream(
+            topic,
+            eh_ns_name,
+            eh_access_key,
+            filter_timestamp,
+            catalog,
+            eh_checkpoint_path,
+        )
+    except Exception as e:
+        logger.error(f"{e}")
+        raise e
+    finally:
+        dbutils.fs.mv(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"abfss://{container_name}@{storage_account}.dfs.core.windows.net/logs/{app_name}/{app_name}_{date}.log",
+        )
