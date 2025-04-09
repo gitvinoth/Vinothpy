@@ -1,0 +1,837 @@
+# Databricks notebook source
+from pyspark.sql.functions import (
+    flatten,
+    collect_list,
+    array,
+    first,
+    struct,
+    col,
+    udf,
+    floor,
+    array_min,
+    split,
+    explode,
+    posexplode,
+    avg,
+    sort_array,
+    size,
+    array_sort,
+)
+from pyspark.sql import DataFrame
+from delta import DeltaTable
+from pyspark.sql.types import (
+    ArrayType,
+    DoubleType,
+    IntegerType,
+    FloatType,
+    StringType,
+    LongType,
+    StructType,
+    StructField,
+)
+from pyspark.sql.window import Window
+from datetime import datetime, timedelta, time as t
+from pyspark.sql import functions as F
+import numpy as np
+from pyspark.sql import types as T
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import udf
+
+# COMMAND ----------
+
+import json
+import zipfile
+import os
+import time
+import gzip
+import bz2
+import tarfile
+import logging
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass
+except NameError:
+    from src.utils.read_utility import read_delta_table
+    from src.utils.on_premise.utility_functions import copy_file
+
+# COMMAND ----------
+
+def das_data_filter(
+    spark, logger, start_time: int, time_window: int, silver_table_df: str
+) -> DataFrame:
+    """
+    This function filters the data from the silver table based on start_time and time window and returns the resultant dataframe.
+    """
+    try:
+        logger.info("Reading the das delta table...")
+
+        # Read the silver table
+        silver_table_df = spark.read.table(silver_table_name)
+
+        if time_window == 604800:
+            # Convert start_time to datetime and adjust to the start of the week (Monday 12 AM)
+            start_datetime = datetime.fromtimestamp(start_time)
+            # Adjust start_time to the nearest 6-hour interval
+            hour = start_datetime.hour
+            adjusted_hour = (hour // 6) * 6
+            start_datetime = start_datetime.replace(
+                hour=adjusted_hour, minute=0, second=0, microsecond=0
+            )
+            start_time = int(start_datetime.timestamp())
+
+            end_time = start_time + 21600 - 1  # 6 hours in seconds
+
+            logger.info(
+                f"Filtering data with start_time: {start_time} and end_time: {end_time}"
+            )
+
+            # Filter rows based on time range
+            filtered_df = silver_table_df.filter(
+                (F.col("time") >= start_time) & (F.col("time") <= end_time)
+            )
+        elif time_window == 2592000:
+            # Convert start_time to datetime
+            start_datetime = datetime.fromtimestamp(start_time)
+
+            # Adjust start_time to 12 AM and end_time to 11:59:59 PM of the same day
+            start_datetime = start_datetime.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            end_datetime = start_datetime + timedelta(days=30) - timedelta(seconds=1)
+            start_time = int(start_datetime.timestamp())
+            end_time = int(end_datetime.timestamp())
+
+            logger.info(
+                f"Filtering data with start_time: {start_time} and end_time: {end_time}"
+            )
+
+            # Filter rows based on time range
+            filtered_df = silver_table_df.filter(
+                (F.col("time") >= start_time) & (F.col("time") <= end_time)
+            )
+        else:
+            end_time = start_time + time_window - 1  # Change the logic
+
+            logger.info(
+                f"Filtering data with start_time: {start_time} and end_time: {end_time}"
+            )
+
+            # Filter rows based on time range
+            filtered_df = silver_table_df.filter(
+                (F.col("time") >= start_time) & (F.col("time") <= end_time)
+            )
+        return filtered_df
+
+    except Exception as e:
+        if "TableNotFoundException" in str(e):
+            logger.error(f"Error in das_data_filter | Table not found: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in das_data_filter : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def das_data_window_append(
+    logger, das_df_filtered: DataFrame, sample_size: int
+) -> DataFrame:
+    """
+    This function groups the data on "Frequencyband", "device_id" and appends all the records within the same "Frequencyband", "device_id". After that, it creates an additional column called json_output where it puts the data , time, and depth column in struct format. This column would then be used for publishing the files.
+    """
+    try:
+        # Add a bucket column to divide data into chunks with a maximum sample size
+        df_bucketed = das_df_filtered.withColumn(
+            "bucket",
+            F.ntile(sample_size).over(
+                Window.partitionBy("freq_band", "asset_id").orderBy("time")
+            ),
+        )
+
+        # Pick the **first** time for each bucket interval
+        df_time_buckets = df_bucketed.withColumn(
+            "first_time",
+            F.first("time").over(
+                Window.partitionBy("freq_band", "asset_id", "bucket").orderBy("time")
+            ),
+        )
+
+        # Explode the data array and the time for each bucket to match the time intervals
+        df_exploded = df_time_buckets.select(
+            "*", F.posexplode("data").alias("pos", "value")
+        )
+
+        # Calculate the average for each bucket and pos for data. Remove Device_id
+        df_avg_bucketed = df_exploded.groupBy(
+            "freq_band", "asset_id", "device_id", "bucket", "pos"
+        ).agg(F.avg("value").alias("avg_value"))
+
+        # Pivot to transpose
+        df_transposed = (
+            df_avg_bucketed.groupBy("freq_band", "asset_id", "device_id", "pos")
+            .pivot("bucket")
+            .agg(F.first("avg_value"))
+        )
+
+        int_column_names = sorted(
+            [
+                int(col)
+                for col in df_transposed.columns
+                if col not in ["freq_band", "asset_id", "device_id", "pos"]
+            ]
+        )
+
+        # Once the columns are converted we are converting them to string. e.g. ['1','2','3','4',...]
+        column_names = [str(col) for col in int_column_names]
+
+        df_transposed = df_transposed.orderBy("pos")
+
+        # Collect the transposed data into a single column of 2D arrays
+        df_transposed = df_transposed.groupBy("freq_band", "asset_id", "device_id").agg(
+            F.collect_list(F.array(column_names)).alias("data")
+        )
+
+        # Now get the first time for each bucket (we already calculated it earlier)
+        df_time_result = df_time_buckets.groupBy(
+            "freq_band", "asset_id", "device_id", "bucket"
+        ).agg(
+            F.first("first_time").alias("time")
+        )  # Ensure we pick the first time for the bucket
+
+        df_time_result = df_time_result.groupBy(
+            "freq_band", "asset_id", "device_id"
+        ).agg(F.collect_list("time").alias("time"))
+
+        # Join the average data and the first time value for each bucket
+        df_combined = df_transposed.join(
+            df_time_result, on=["freq_band", "asset_id", "device_id"]
+        )
+
+        # Group by freq_band, asset_id, and device_id to collect all data and time into 2D lists across buckets
+        df_final = df_combined.groupBy("freq_band", "asset_id", "device_id").agg(
+            F.collect_list("data").alias("data"), F.collect_list("time").alias("time")
+        )
+
+        # Collect depth (assuming it is constant within each group) and add it back to the final DataFrame
+        df_depth = das_df_filtered.groupBy("freq_band", "asset_id", "device_id").agg(
+            F.first("depth").alias("depth")
+        )
+
+        df_final_with_depth = df_final.join(
+            df_depth, on=["freq_band", "asset_id", "device_id"]
+        )
+
+        df_final_with_depth = df_final_with_depth.withColumn(
+            "data", F.flatten(F.col("data"))
+        ).withColumn("time", F.flatten(F.col("time")))
+
+        # Create a JSON structure for data, time, and depth columns
+        das_df_json = df_final_with_depth.withColumn(
+            "json_output", F.struct(F.col("data"), F.col("time"), F.col("depth"))
+        )
+
+        # Select the required columns to display
+        das_df_json = das_df_json.select(
+            "freq_band", "asset_id", "device_id", "json_output"
+        )
+
+        return das_df_json
+
+    except Exception as e:
+        if "AnalysisException" in str(e):
+            logger.error(f"Error in das_data_window_append: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in das_data_window_append : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def list_directory(path: str):
+    """
+    List the contents of a directory.
+    """
+    try:
+        return [file.name for file in dbutils.fs.ls(path)]
+    except Exception as e:
+        if "FileNotFoundException" in str(e):
+            return []
+        else:
+            raise
+
+# COMMAND ----------
+
+def delete_previous_day_data(spark, logger, silver_table_name: str):
+    """
+    This function deletes the previous day's data from the silver table if run during the first 30 min of the day
+    """
+    try:
+        now = datetime.now()
+
+        if now.hour == 0 and now.minute < 30:
+            previous_day = now.date() - timedelta(days=1)
+            start_of_previous_day = datetime.combine(previous_day, datetime.min.time())
+            end_of_previous_day = datetime.combine(previous_day, datetime.max.time())
+
+            start_time_epoch = int(start_of_previous_day.timestamp())
+            end_time_epoch = int(end_of_previous_day.timestamp())
+
+            logger.info(f"Deleting data from silver table '{silver_table_name}' where time >= {start_time_epoch} and time < {end_time_epoch}")
+                        
+            spark.sql(f"""DELETE FROM {silver_table_name} WHERE time >= {start_time_epoch} AND time <= {end_time_epoch}""")
+            logger.info("Previous day's data deleted successfully")
+        else:
+            logger.info("Not deleting previous day's data")
+
+    except Exception as e:
+        logger.error(f"Error in delete_previous_day_data: {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def is_end_of_6th_hour_window(current_time: datetime) -> bool:
+    """
+    This function checks if the current time is at the end of a 6-hour window.
+    """
+    current_time = datetime.fromtimestamp(current_time)
+    return current_time.hour % 6 == 0 and current_time.minute < 30
+
+# COMMAND ----------
+
+def is_end_of_day(current_time: datetime) -> bool:
+    """
+    This function checks if the current time is at the end of the day.
+    """
+    return current_time.hour == 0 and current_time.minute < 30
+
+# COMMAND ----------
+
+def get_max_time_of_data(spark, silver_table_name: str) -> datetime:
+    """
+    This function gets the maximum time of the current day's data from the silver table.
+    """
+    try:
+        # Read the silver table
+        silver_table_df = spark.read.table(silver_table_name)
+
+        # Get the maximum time from the filtered data
+        max_time_epoch = silver_table_df.agg(F.max("time")).collect()[0][0]
+
+        return datetime.fromtimestamp(max_time_epoch)
+
+    except Exception as e:
+        if "TableNotFoundException" in str(e):
+            logger.error(
+                f"Error in get_max_time_of_current_day | Table not found: {str(e)}"
+            )
+            raise
+        else:
+            logger.error(f"Error in get_max_time_of_current_day : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def write_and_zip_json_data(
+    json_data,
+    asset_id,
+    device_id,
+    freq_bd_val,
+    epoch_start_time,
+    freq,
+    cloud_zip_file_path,
+):
+    local_file_path = f"/{asset_id}_{freq_bd_val}_{epoch_start_time}_{freq}.json"
+
+    # Construct the local zip file path present in the driver node.
+    zip_file_path = f"/tmp/{asset_id}_{freq_bd_val}_{epoch_start_time}_{freq}.zip"
+
+    # Write the JSON data to a local file
+    with open(local_file_path, "w") as f:
+        f.write(json_data)
+
+    # Create a ZipFile object
+    with zipfile.ZipFile(
+        zip_file_path,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=1,
+    ) as zipf:
+        # Add the file to the zip file
+        zipf.write(local_file_path, arcname=os.path.basename(local_file_path))
+
+    # Remove the local file
+    os.remove(local_file_path)
+
+    logger.info(
+        f"Publishing the file for freq band: {freq_bd_val} and device id : {device_id} and asset_id : {asset_id} to location : {cloud_zip_file_path}"
+    )
+
+    # Write the zip file to ADLS Gen2
+    copy_file(f"file:{zip_file_path}", cloud_zip_file_path)
+
+    # Remove the local zip file
+    os.remove(zip_file_path)
+
+# COMMAND ----------
+
+def append_and_zip_json_data(
+    cloud_zip_file_path, json_data, asset_id, freq_bd_val, epoch_start_time, freq
+):
+    logger.info(f"File already exists at: {cloud_zip_file_path}")
+
+    # Download the zip file from cloud storage to local file system
+    local_zip_file_path = f"/tmp/{asset_id}/{freq_bd_val}/{epoch_start_time}_{freq}.zip"
+    copy_file(cloud_zip_file_path, f"file:{local_zip_file_path}")
+
+    extract_folder_name = f"/tmp/{asset_id}/{freq_bd_val}/{epoch_start_time}_{freq}"
+
+    if not os.path.exists(extract_folder_name):
+        os.mkdir(extract_folder_name)
+
+    with zipfile.ZipFile(local_zip_file_path, "r") as z:
+        z.extractall(extract_folder_name)
+
+    json_files = [f for f in os.listdir(extract_folder_name) if f.endswith(".json")]
+    if json_files:
+        json_file_path = os.path.join(extract_folder_name, json_files[0])
+        with open(json_file_path, "r") as file:
+            existing_data = json.load(file)
+
+        # Update the existing data with new JSON data
+        new_data = json.loads(json_data)
+        existing_data["data"] = [
+            x + y for x, y in zip(existing_data["data"], new_data["data"])
+        ]
+        existing_data["time"].extend(new_data.get("time", []))
+
+        # Write the updated data back to the JSON file
+        with open(json_file_path, "w") as file:
+            json.dump(existing_data, file)
+
+        # Create a new zip file with the updated JSON file
+        updated_zip_file_path = "/tmp/updated_data.zip"
+        with zipfile.ZipFile(updated_zip_file_path, "w") as zipf:
+            zipf.write(json_file_path, os.path.basename(json_file_path))
+
+        # Copy the updated zip file to the cloud storage
+        copy_file(f"file:{updated_zip_file_path}", cloud_zip_file_path)
+        os.remove(local_zip_file_path)
+        os.remove(updated_zip_file_path)
+
+# COMMAND ----------
+
+def das_file_publish(
+    logger,
+    input_df: DataFrame,
+    target_file_path: str,
+    epoch_start_time: int,
+    time_window: int,
+):
+    """
+    This function generates each file, zips the file, and publishes the file
+    """
+    try:
+        if input_df.count() == 0:
+            logger.info("Input DataFrame is empty. No data to publish.")
+            return
+
+        if time_window == 1800:
+            freq = "30mins"
+        elif time_window == 3600:
+            freq = "60mins"
+        elif time_window == 86400:
+            freq = "1day"
+        elif time_window == 604800:
+            freq = "1week"
+        elif time_window == 2592000:
+            freq = "1month"
+
+        # Function to convert row to JSON
+        def row_to_json(row):
+            return json.dumps(row.asDict(), ensure_ascii=False)
+
+        # Iterate over each row in the DataFrame
+        for row in input_df.collect():
+            # Get the fr_bd value and json_output from the row
+            freq_bd_val = row.freq_band
+            json_output = row.json_output
+            device_id = row.device_id
+            asset_id = row.asset_id
+
+            # Construct the path where files would be published
+            write_file_path = f"{target_file_path}/{asset_id}"
+
+            # Convert the json_output to JSON format
+            json_data = row_to_json(json_output)
+
+            # Construct the json file path
+            file_path = (
+                f"{write_file_path}/{freq_bd_val}/{epoch_start_time}_{freq}.json"
+            )
+
+            # Construct the cloud file path with the final file name
+            cloud_zip_file_path = (
+                f"{write_file_path}/{freq_bd_val}/{epoch_start_time}_{freq}.zip"
+            )
+
+            if time_window in [604800, 2592000]:
+                # Check if the cloud zip file path already exists
+                file_exists = False
+                try:
+                    if cloud_zip_file_path.split("/")[-1] in list_directory(
+                        f"{write_file_path}/{freq_bd_val}"
+                    ):
+                        file_exists = True
+                except Exception as e:
+                    if "FileNotFoundException" in str(e):
+                        file_exists = False
+                    else:
+                        raise
+
+                if file_exists:
+                    append_and_zip_json_data(
+                        cloud_zip_file_path,
+                        json_data,
+                        asset_id,
+                        freq_bd_val,
+                        epoch_start_time,
+                        freq,
+                    )
+                else:
+                    # Construct the local file path where files will be written for zipping files locally
+                    write_and_zip_json_data(
+                        json_data,
+                        asset_id,
+                        device_id,
+                        freq_bd_val,
+                        epoch_start_time,
+                        freq,
+                        cloud_zip_file_path,
+                    )
+            else:
+                # Directly create the file in the cloud for other time windows
+
+                write_and_zip_json_data(
+                    json_data,
+                    asset_id,
+                    device_id,
+                    freq_bd_val,
+                    epoch_start_time,
+                    freq,
+                    cloud_zip_file_path,
+                )
+
+    except Exception as e:
+        if "OSError" in str(e):
+            logger.error(f"Error in das_file_publish: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in das_file_publish : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def current_window_start_time(
+    spark, logger, time_window: int, current_time_epoch: int, latest_data_time: int
+) -> int:
+    try:
+        # Ensure latest_data_time is a Unix timestamp
+        if isinstance(latest_data_time, datetime):
+            latest_data_time = int(latest_data_time.timestamp())
+
+        start_time_date = datetime.fromtimestamp(latest_data_time)
+        start_time = None
+
+        if time_window in [1800, 3600, 86400]:
+            seed_time = latest_data_time % time_window
+            start_time = latest_data_time - seed_time
+        elif time_window == 604800:
+            today = datetime.now()
+            start_of_this_week = today - timedelta(
+                days=today.weekday()
+            )  # Start of this week (Monday)
+            start_of_this_week = (start_of_this_week).replace(
+                hour=0, minute=0, second=0
+            )
+            start_time = int(start_of_this_week.timestamp())
+
+        elif time_window == 2592000:
+            # Get the start of the month
+            month_start = (
+                datetime.fromtimestamp(current_time_epoch)
+                .replace(day=1, hour=0, minute=0, second=0)
+                .timestamp()
+            )
+            start_time = int(month_start)
+
+        if start_time is None:
+            raise ValueError("Invalid time window provided")
+
+        return start_time
+
+    except Exception as e:
+        if "ZeroDivisionError" in str(e):
+            logger.error(f"Error in current_window_start_time: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in current_window_start_time : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+# Function to truncate data based on the epoch time column ('time')
+def truncate_data(spark, logger, silver_table) -> None:
+    """
+    Delete previous month data from the silver table on the first monday of the current month.
+    """
+    try:
+        logger.info("Starting data truncation process...")
+
+        # Get the current date
+        current_date = datetime.now()
+        day = current_date.day
+        day_of_week = current_date.weekday()
+        is_within_time_window = t(0, 0) <= current_date.time() < t(0, 30)
+
+        # Check if today is the first Monday of the current month
+        if day_of_week == 0 and day <= 7 and is_within_time_window:
+            logger.info(
+                "Today is the first Monday of the month. Proceeding with truncation..."
+            )
+            first_day_of_month = current_date.replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0
+            )
+            # Get the epoch time for the first of the last month
+            epoch_time = int(first_day_of_month.timestamp())
+
+            # Perform the DELETE operation to remove rows older than the first of last month
+            silver_table.delete(F.col("time") < epoch_time)
+
+        else:
+            logger.info(
+                "Today is not the first Monday of the month. Skipping truncation."
+            )
+
+    except Exception as e:
+        logger.error(f"Error in truncate_data: {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def last_window_start_time_das(
+    spark, logger, current_time_epoch: int, time_window: int
+) -> int:
+    try:
+        logger.info("Inside last_window_start_time function")
+        start_time = 0
+        evaluation_time = current_time_epoch - time_window
+        # Converting to date format
+        dt = datetime.fromtimestamp(current_time_epoch)
+        start_time_date = datetime.fromtimestamp(current_time_epoch).date()
+        if time_window in [1800, 3600]:
+            seed_time = evaluation_time % time_window
+            start_time = evaluation_time - seed_time
+        elif time_window == 86400:
+            current_datetime = datetime.now()
+            is_within_time_window = t(0, 0) <= current_datetime.time() < t(0, 30)
+            if is_within_time_window:
+                previous_day = current_datetime.date() - timedelta(days=1)
+                start_time = int(datetime.combine(previous_day, t(0, 0)).timestamp())
+        elif time_window == 604800:
+            current_datetime = datetime.now()
+            is_monday = current_datetime.weekday() == 0
+            is_within_time_window = t(0, 0) <= current_datetime.time() < t(0, 30)
+            logger.info(
+                f"Time window : {time_window} | is_monday : {is_monday} | is_within_time_window : {is_within_time_window}"
+            )
+            if is_monday and is_within_time_window:
+                previous_week_start = current_datetime - timedelta(days=7)
+                start_time = int(
+                    previous_week_start.replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    ).timestamp()
+                )
+        elif time_window == 2592000:
+            current_datetime = datetime.now()
+            is_first_day_of_month = current_datetime.day == 1
+            is_within_time_window = t(0, 0) <= current_datetime.time() < t(0, 30)
+            logger.info(
+                f"Time window : {time_window} | is_first_day_of_month : {is_first_day_of_month} | is_within_time_window : {is_within_time_window}"
+            )
+            if is_first_day_of_month and is_within_time_window:
+                logger.info("Inside if")
+                first_day_of_current_month = current_datetime.replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                )
+                last_day_of_previous_month = first_day_of_current_month - timedelta(
+                    days=1
+                )
+                start_time = int(last_day_of_previous_month.replace(day=1).timestamp())
+
+        return start_time
+
+    except Exception as e:
+        if "ZeroDivisionError" in str(e):
+            logger.error(f"Error in last_window_start_time: {str(e)}")
+            raise
+        else:
+            logger.error(f"Error in last_window_start_time : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def das_data_publish(
+    spark,
+    logger,
+    silver_table_name: str,
+    target_file_path: str,
+    initation_time: int,
+    time_window: int,
+    sample_size: int,
+):
+    """
+    This function is the main function which controls all the logic by calling other functions. First it calculates start time and using that it filters necessary data from silver table. After that, it appends necessary data by groups and creates the necessary struct format data. Finally, it generates the zip file and publishes it.
+    """
+    try:
+        # Read the silver table into a DataFrame
+        silver_table_dt = read_delta_table(spark, logger, silver_table_name)
+        silver_table_df = silver_table_dt.toDF()
+
+        logger.info(
+            f"Starting execution for execution time : {initation_time} and time_window : {time_window}"
+        )
+        # Get the latest data time
+        latest_data_time = get_max_time_of_data(spark, silver_table_name)
+        if latest_data_time is None:
+            logger.info("No data available for the current date.")
+            return
+        # Ensure latest_data_time is a Unix timestamp
+        if isinstance(latest_data_time, datetime):
+            latest_data_time = int(latest_data_time.timestamp())
+
+        # Calculate the start time for the current window
+        cw_start_time = current_window_start_time(
+            spark, logger, time_window, initation_time, latest_data_time
+        )
+        # Filter the data for the current window
+        cw_das_df_filtered = das_data_filter(
+            spark, logger, latest_data_time, time_window, silver_table_df
+        )
+
+        if cw_das_df_filtered is None:
+            logger.info(
+                f"No data found for current window. No data will be published..."
+            )
+
+        else:
+            # Append necessary data by groups
+            cw_df_append = das_data_window_append(
+                logger, cw_das_df_filtered, sample_size
+            )
+            logger.info(
+                f"Data found, current window execution will happen and total {cw_df_append.count()} files will be published"
+            )
+
+            # Check if the current time is at the end of the 6th-hour window or end of day
+
+            if latest_data_time is not None:
+                if time_window == 604800 and is_end_of_6th_hour_window(
+                    latest_data_time
+                ):
+                    logger.info(
+                        "Publishing the file at the end of the 6th-hour window."
+                    )
+                    das_file_publish(
+                        logger,
+                        cw_df_append,
+                        target_file_path,
+                        cw_start_time,
+                        time_window,
+                    )
+                elif time_window == 2592000 and is_end_of_day(latest_data_time):
+                    logger.info("Publishing the file at the end of the day.")
+                    das_file_publish(
+                        logger,
+                        cw_df_append,
+                        target_file_path,
+                        cw_start_time,
+                        time_window,
+                    )
+                else:
+                    das_file_publish(
+                        logger,
+                        cw_df_append,
+                        target_file_path,
+                        cw_start_time,
+                        time_window,
+                    )
+
+            else:
+                logger.info("No data available for the current date.")
+
+            logger.info(f"Current window data published successfully")
+
+        # Delete the previous day's data from the silver table
+        delete_previous_day_data(spark, logger, silver_table_name)
+
+        logger.info(
+            "-------------------------------------------------------------------------------------------------------"
+        )
+
+        # Last Window execution for edge cases
+        logger.info("Calling last window start time function")
+        lw_start_time = last_window_start_time_das(
+            spark, logger, initation_time, time_window
+        )
+        logger.info(f"lw_start_time : {lw_start_time}")
+
+        if lw_start_time == 0:
+            logger.info("Last window execution will not happen.")
+        else:
+            logger.info(
+                "Last window execution will happen since it is edge case. Starting execution..."
+            )
+            # Filter the data for the last window
+            lw_das_df_filtered = das_data_filter(
+                spark, logger, lw_start_time, time_window, silver_table_df
+            )
+
+            # Append necessary data by groups
+            last_df_append = das_data_window_append(
+                logger, lw_das_df_filtered, sample_size
+            )
+
+            if last_df_append is None:
+                logger.info(
+                    f"No data found for last window. No data will be published..."
+                )
+
+            else:
+                logger.info(
+                    f"Data found, last window execution will happen and total {last_df_append.count()} files will be published"
+                )
+                # Publish the data for the last window
+                das_file_publish(
+                    logger, last_df_append, target_file_path, lw_start_time, time_window
+                )
+
+                logger.info(f"Last window data published successfully")
+
+        # Truncate data if the time window is monthly
+        if time_window == 2592000:
+            truncate_data(spark, logger, silver_table_dt)
+
+    except Exception as e:
+        if "FileNotFoundError" in str(e):
+            logger.error(f"Error in das_data_publish: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in das_data_publish : {str(e)}")
+            raise
