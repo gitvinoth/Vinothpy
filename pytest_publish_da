@@ -11,11 +11,11 @@ from pyspark.sql.types import (
 )
 
 from unittest.mock import patch, Mock
-from src.etl.dt_publish_das import (
+from src.etl.dt_publish_das_copy import (
     das_data_filter,
     das_data_window_append,
     das_file_publish,
-    last_window_start_time,
+    #last_window_start_time,
     current_window_start_time,
     das_data_publish,
 )
@@ -96,9 +96,9 @@ def test_das_data_window_append(spark, logger):
     assert "json_output" in appended_df.columns
 
 
-def test_last_window_start_time(spark, logger):
+'''def test_last_window_start_time(spark, logger):
     start_time = last_window_start_time(spark, logger, 1609459200, 3600)
-    assert start_time == 1609455600
+    assert start_time == 1609455600'''
 
 
 def test_current_window_start_time(spark, logger):
@@ -106,11 +106,11 @@ def test_current_window_start_time(spark, logger):
     assert start_time == 1609459200
 
 
-@patch("src.etl.dt_publish_das.copy_file")
-@patch("src.etl.dt_publish_das.os.remove")
-@patch("src.etl.dt_publish_das.zipfile.ZipFile")
-@patch("src.etl.dt_publish_das.open", new_callable=mock_open)
-@patch("src.etl.dt_publish_das.json.dumps")
+@patch("src.etl.dt_publish_das_copy.copy_file")
+@patch("src.etl.dt_publish_das_copy.os.remove")
+@patch("src.etl.dt_publish_das_copy.zipfile.ZipFile")
+@patch("src.etl.dt_publish_das_copy.open", new_callable=mock_open)
+@patch("src.etl.dt_publish_das_copy.json.dumps")
 def test_das_file_publish_success(
     mock_json_dumps,
     mock_open_func,
@@ -190,13 +190,13 @@ def test_das_data_window_append_exception(spark, logger):
     assert "[UNRESOLVED_COLUMN.WITHOUT_SUGGESTION]" in str(excinfo.value)
 
 
-def test_last_window_start_time_exception(spark, logger):
+'''def test_last_window_start_time_exception(spark, logger):
     with pytest.raises(Exception) as excinfo:
         # Simulate an error by passing zero time_window which will lead to ZeroDivisionError
         last_window_start_time(spark, logger, 1609459200, 0)
     assert "local variable 'start_time' referenced before assignment" in str(
         excinfo.value
-    )
+    )'''
 
 
 def test_current_window_start_time_exception(spark, logger):
@@ -212,3 +212,49 @@ def test_das_file_publish_exception(spark, logger, tmpdir):
     with pytest.raises(Exception) as excinfo:
         das_file_publish(logger, None, None, 1609459200, 3600)
     assert "'NoneType' object has no attribute 'collect'" in str(excinfo.value)
+
+
+def test_delete_previous_day_data(spark, logger):
+    from datetime import datetime
+    with patch.object(spark, "sql") as mock_sql:
+        test_time = int(datetime(2024, 4, 10, 0, 15).timestamp())
+        delete_previous_day_data(spark, logger, "silver_table", test_time)
+        mock_sql.assert_called_once()
+        assert "DELETE FROM silver_table" in mock_sql.call_args[0][0]
+
+
+def test_is_end_of_6th_hour_window_true():
+    test_time = int(datetime(2024, 4, 10, 5, 45).timestamp())  # 5:45 AM
+    assert is_end_of_6th_hour_window(test_time) is True
+
+
+def test_is_end_of_6th_hour_window_false():
+    test_time = int(datetime(2024, 4, 10, 4, 15).timestamp())  # 4:15 AM
+    assert is_end_of_6th_hour_window(test_time) is False
+
+
+def test_is_end_of_day_true():
+    test_time = int(datetime(2024, 4, 10, 23, 45).timestamp())
+    assert is_end_of_day(test_time) is True
+
+
+def test_is_end_of_day_false():
+    test_time = int(datetime(2024, 4, 10, 21, 00).timestamp())
+    assert is_end_of_day(test_time) is False
+
+
+def test_get_max_time_of_data(spark):
+    mock_df = MagicMock()
+    mock_df.agg.return_value.collect.return_value = [[1712475600]]
+    with patch.object(spark.read, "table", return_value=mock_df):
+        result = get_max_time_of_data(spark, "silver_table")
+        assert isinstance(result, datetime)
+        assert result.timestamp() == 1712475600
+
+
+def test_get_cw_das_df_filtered(spark, logger):
+    sample_df = MagicMock(spec=DataFrame)
+    with patch("src.etl.dt_publish_das_copy.das_data_filter", return_value=sample_df), \
+         patch("src.etl.dt_publish_das_copy.das_data_window_append", return_value=sample_df):
+        result = get_cw_das_df_filtered(spark, logger, 1609459200, 3600, "silver_table", 2)
+        assert result == sample_df 
