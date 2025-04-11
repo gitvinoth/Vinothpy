@@ -1,0 +1,214 @@
+import pytest
+from pyspark.sql.functions import col, struct
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    StringType,
+    ArrayType,
+    LongType,
+    DoubleType,
+    FloatType,
+)
+
+from unittest.mock import patch, Mock
+from src.etl.dt_publish_das import (
+    das_data_filter,
+    das_data_window_append,
+    das_file_publish,
+    last_window_start_time,
+    current_window_start_time,
+    das_data_publish,
+)
+from unittest.mock import patch, MagicMock, mock_open
+from pyspark.sql import SparkSession, DataFrame, Row
+import logging
+import zipfile
+
+
+def test_das_data_filter(spark, logger):
+    data = [
+        (
+            "freq1",
+            "device1",
+            "asset1",
+            [1609459200, 1609462800, 1609466400],
+            [1.0, 2.0, 3.0],
+            10.0,
+        ),
+        (
+            "freq2",
+            "device2",
+            "asset2",
+            [1609459200, 1609462800, 1609466400],
+            [4.0, 5.0, 6.0],
+            20.0,
+        ),
+    ]
+    schema = StructType(
+        [
+            StructField("freq_band", StringType(), True),
+            StructField("device_id", StringType(), True),
+            StructField("asset_id", StringType(), True),
+            StructField("time", ArrayType(LongType()), True),
+            StructField("data", ArrayType(DoubleType()), True),
+            StructField("depth", DoubleType(), True),
+        ]
+    )
+    df = spark.createDataFrame(data, schema)
+    filtered_df = das_data_filter(spark, logger, 1609459200, 3600, df)
+    assert filtered_df is not None
+    assert filtered_df.count() == 2
+
+
+def test_das_data_window_append(spark, logger):
+    data = [
+        (
+            "freq1",
+            "device1",
+            "asset1",
+            [1609459200, 1609462800, 1609466400],
+            [1.0, 2.0, 3.0],
+            10.0,
+        ),
+        (
+            "freq2",
+            "device2",
+            "asset2",
+            [1609459200, 1609462800, 1609466400],
+            [4.0, 5.0, 6.0],
+            20.0,
+        ),
+    ]
+    schema = StructType(
+        [
+            StructField("freq_band", StringType(), True),
+            StructField("device_id", StringType(), True),
+            StructField("asset_id", StringType(), True),
+            StructField("time", ArrayType(LongType()), True),
+            StructField("data", ArrayType(DoubleType()), True),
+            StructField("depth", DoubleType(), True),
+        ]
+    )
+    df = spark.createDataFrame(data, schema)
+    appended_df = das_data_window_append(logger, df, 2)
+    assert appended_df is not None
+    assert appended_df.count() == 2
+    assert "json_output" in appended_df.columns
+
+
+def test_last_window_start_time(spark, logger):
+    start_time = last_window_start_time(spark, logger, 1609459200, 3600)
+    assert start_time == 1609455600
+
+
+def test_current_window_start_time(spark, logger):
+    start_time = current_window_start_time(spark, logger, 1609459200, 3600)
+    assert start_time == 1609459200
+
+
+@patch("src.etl.dt_publish_das.copy_file")
+@patch("src.etl.dt_publish_das.os.remove")
+@patch("src.etl.dt_publish_das.zipfile.ZipFile")
+@patch("src.etl.dt_publish_das.open", new_callable=mock_open)
+@patch("src.etl.dt_publish_das.json.dumps")
+def test_das_file_publish_success(
+    mock_json_dumps,
+    mock_open_func,
+    mock_zipfile,
+    mock_os,
+    mock_copy_file,
+    spark,
+    logger,
+):
+    time_window = 1800
+    freq = "30mins"
+    epoch_start_time = 1719569992
+    mock_target_file_path = "file://folder/"
+    mock_asset_id = "mock asset id"
+    mock_device_id = "mock device id"
+    mock_json_output = {"mock_key": "mock value"}
+    mock_freq_band = "mock freq band"
+    mock = MagicMock()
+    mock_input_df = MagicMock(spec=DataFrame)
+    mock_row = Row(
+        freq_band=mock_freq_band,
+        json_output=Row(mock_key="mock value"),
+        device_id=mock_device_id,
+        asset_id=mock_asset_id,
+    )
+    mock_input_df.collect.return_value = [mock_row]
+    mock_json_dumps.return_value = mock_json_output
+    mock_copy_file.return_value = mock
+
+    mock_write_file_path = f"{mock_target_file_path}/{mock_asset_id}"
+    mock_file_path = (
+        f"{mock_write_file_path}/{mock_freq_band}/{epoch_start_time}_{freq}.json"
+    )
+    mock_cloud_zip_file_path = (
+        f"{mock_write_file_path}/{mock_freq_band}/{epoch_start_time}_{freq}.zip"
+    )
+    mock_local_file_path = (
+        f"/{mock_asset_id}_{mock_freq_band}_{epoch_start_time}_{freq}.json"
+    )
+    mock_zip_file_path = (
+        f"/tmp/{mock_asset_id}_{mock_freq_band}_{epoch_start_time}_{freq}.zip"
+    )
+
+    das_file_publish(
+        logger, mock_input_df, mock_target_file_path, epoch_start_time, time_window
+    )
+
+    mock_input_df.collect.assert_called_once()
+    mock_json_dumps.assert_called_once()
+    mock_json_dumps.assert_any_call(mock_json_output, ensure_ascii=False)
+    mock_open_func.assert_any_call(mock_local_file_path, "w")
+    mock_file_handle = mock_open_func()
+    mock_file_handle.write.assert_any_call(mock_json_output)
+    mock_zipfile.assert_any_call(
+        mock_zip_file_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1
+    )
+    mock_os.assert_any_call(mock_local_file_path)
+    mock_copy_file.assert_any_call(
+        f"file:{mock_zip_file_path}", mock_cloud_zip_file_path
+    )
+    mock_os.assert_any_call(mock_zip_file_path)
+
+
+def test_das_data_filter_exception(spark, logger):
+    with pytest.raises(Exception) as excinfo:
+        # Simulate an error by passing an incorrect type
+        df = spark.createDataFrame([], StructType([]))  # empty DataFrame
+        das_data_filter(spark, logger, 1609459200, 3600, df)
+    assert "[UNRESOLVED_COLUMN.WITHOUT_SUGGESTION]" in str(excinfo.value)
+
+
+def test_das_data_window_append_exception(spark, logger):
+    with pytest.raises(Exception) as excinfo:
+        # Simulate an error by passing an incorrect type
+        df = spark.createDataFrame([], StructType([]))  # empty DataFrame
+        das_data_window_append(logger, df, 2)
+    assert "[UNRESOLVED_COLUMN.WITHOUT_SUGGESTION]" in str(excinfo.value)
+
+
+def test_last_window_start_time_exception(spark, logger):
+    with pytest.raises(Exception) as excinfo:
+        # Simulate an error by passing zero time_window which will lead to ZeroDivisionError
+        last_window_start_time(spark, logger, 1609459200, 0)
+    assert "local variable 'start_time' referenced before assignment" in str(
+        excinfo.value
+    )
+
+
+def test_current_window_start_time_exception(spark, logger):
+    with pytest.raises(Exception) as excinfo:
+        # Simulate an error by passing zero time_window which will lead to ZeroDivisionError
+        current_window_start_time(spark, logger, 1609459200, 0)
+    assert "local variable 'start_time' referenced before assignment" in str(
+        excinfo.value
+    )
+
+
+def test_das_file_publish_exception(spark, logger, tmpdir):
+    with pytest.raises(Exception) as excinfo:
+        das_file_publish(logger, None, None, 1609459200, 3600)
+    assert "'NoneType' object has no attribute 'collect'" in str(excinfo.value)
