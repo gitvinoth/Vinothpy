@@ -1,0 +1,14 @@
+Add support for average function rules for all sensor types in rule engine.Rule should be added to rule table along with query.Will need a new parameter in rules table called "window_slide_duration". This will be set to same as duration for "average" rules, and 0 for other rules. This parameter will be used in algorithm to determine start_time.For DSS, average will be over depth. For other timeseries data, average will be over a sliding window of x durationThe rule should be executed successfully in the existing rule engine and process anomalies as applicable.
+
+average will work on sliding window. 
+
+example - average pressure > 50 for 10 seconds
+
+take average of 1 sec - 10 sec  > 50, 2 sec - 11 sec > 50, 3 sec - 12 sec > 50 and so on....
+
+start_time - end_time -
+
+current logic - 12-12:29, 12:30-12:59
+
+for average function - 12-12:29:59,12:29:51 - 1:00
+
