@@ -1,0 +1,10 @@
+File <command-909007852116592>, line 26, in current_window_start_time(spark, logger, current_time_epoch, time_window)
+     19         month_start = (
+     20             datetime.fromtimestamp(current_time_epoch)
+     21             .replace(day=1, hour=0, minute=0, second=0)
+     22             .timestamp()
+     23         )
+     24         start_time = int(month_start)
+---> 26     return start_time
+     28 except Exception as e:
+     29     if "ZeroDivisionError" in str(e):
