@@ -1,0 +1,60 @@
+def handle_no_of_events(
+   asset_id_list: list[str],
+   clss: int = None,
+   function: str = None,
+   duration: int = 0,
+   join_condition: str = "and",
+   parameter: str = "$parameter"
+) -> str:
+    
+   if len(asset_id_list) == 0:
+       return "asset_id_null"
+   
+   # Average rule logic
+   if function == "average":
+       queries = [
+           f"""
+           SELECT CAST(($start_time + $duration * outer.grp) AS bigint) AS timestamp
+           FROM (
+               SELECT FLOOR((epoch_timestamp - $start_time)/$duration) AS grp, asset_id
+               FROM `$catalog`.silver_zone.microseismic_events`
+               WHERE asset_id = '{asset_id}' {"AND class = " + str(clss) if clss is not None else ""}
+                 AND epoch_timestamp BETWEEN $start_time AND $end_time
+           ) outer
+           JOIN (
+               SELECT FLOOR((epoch_timestamp - $start_time)/$duration) AS grp, asset_id
+               FROM `$catalog`.silver_zone.microseismic_events`
+               WHERE asset_id = '{asset_id}' {"AND class = " + str(clss) if clss is not None else ""}
+                 AND epoch_timestamp BETWEEN $start_time AND $end_time
+           ) inner
+           ON outer.grp = inner.grp
+           GROUP BY outer.grp
+           HAVING AVG(COUNT(*)) OVER (
+               ORDER BY outer.grp
+               RANGE BETWEEN CURRENT ROW AND {duration}
+           ) $operator $threshold
+           """ for i, asset_id in enumerate(asset_id_list)
+       ]
+       return union_all_sliding_avg_queries(queries, join_condition)
+   
+   # Handles query generation for 'no_of_events' parameter
+   
+   if clss is not None:
+       first_subquery = generate_subquery(NO_EVENTS_TEMPLATE, asset_id_list[0], 1)
+       join_template = " on condition_1.grp = condition_$index2.grp"
+       subqueries = [
+           f" inner join {generate_subquery(NO_EVENTS_TEMPLATE, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+           for i, asset_id in enumerate(asset_id_list[1:])
+       ]
+   else:
+       first_subquery = generate_subquery(
+           NO_EVENTS_TEMPLATE_WITHOUT_CLASS, asset_id_list[0], 1
+       )
+       join_template = " on condition_1.grp = condition_$index2.grp"
+       subqueries = [
+           f" inner join {generate_subquery(NO_EVENTS_TEMPLATE_WITHOUT_CLASS, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+           for i, asset_id in enumerate(asset_id_list[1:])
+       ]
+   subquery = first_subquery + " ".join(subqueries)
+   complete_query = NO_EVENTS_PREFIX + subquery
+   return complete_query
