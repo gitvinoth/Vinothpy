@@ -1,0 +1,10 @@
+WITH base_ptgauge as (
+   select epoch_timestamp, pressure
+         FROM pt_gauge
+       WHERE asset_id = 'PTG_002'
+         AND epoch_timestamp BETWEEN $start_time and $end_time
+)
+   SELECT outer_table.epoch_timestamp as outer_epoch ,inner_table.epoch_timestamp, inner_table.pressure
+       FROM base_ptgauge outer_table
+       JOIN base_ptgauge inner_table ON
+         inner_table.epoch_timestamp BETWEEN outer_table.epoch_timestamp AND outer_table.epoch_timestamp + (duration -1)
