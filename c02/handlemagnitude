@@ -1,37 +1,5 @@
-def handle_magnitude(
-    asset_id_list: list[str],
-    clss: int = None,
-    function: str = None,
-    duration: int = 0,
-    join_condition: str = "and",
-    parameter: str = "$parameter"
-) -> str:
-    
-    if len(asset_id_list) == 0:
-        return "asset_id_null"
-    
-    # Average rule logic 
-    if function == "average":
-        queries = [
-            f"""
-            SELECT epoch_timestamp AS timestamp
-            FROM (
-                SELECT outer.epoch_timestamp
-                FROM `$catalog`.silver_zone.microseismic_events` outer
-                JOIN `$catalog`.silver_zone.microseismic_events` inner
-                  ON outer.asset_id = inner.asset_id
-                 AND inner.epoch_timestamp BETWEEN outer.epoch_timestamp AND outer.epoch_timestamp + ({duration} * 1000)
-                WHERE outer.asset_id = '{asset_id}'
-                  {"AND class = " + str(clss) if clss is not None else ""}
-                  AND outer.epoch_timestamp BETWEEN $start_time AND $end_time
-                GROUP BY outer.epoch_timestamp
-                HAVING AVG(inner.magnitude) $operator $threshold
-            ) AS asset_{i+1}
-            """ for i, asset_id in enumerate(asset_id_list)
-        ]
-        return union_all_sliding_avg_queries(queries, join_condition)
-    
-    # Handles query generation for 'magnitude' parameter.
+def handle_magnitude(asset_id_list: list[str], clss: int) -> str:
+    """Handles query generation for 'magnitude' parameter."""
     if clss is not None:
         first_subquery = generate_subquery(MAGNITUDE_TEMPLATE, asset_id_list[0], 1)
         join_template = (
