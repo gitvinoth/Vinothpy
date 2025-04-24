@@ -1,0 +1,1 @@
+CTE_SLIDING_AVG_TEMPLATE = " WITH base_$table_name AS ( SELECT asset_id, $timestamp_column, $parameter FROM `$catalog`.silver_zone.$table_name WHERE asset_id IN ($asset_id_list) AND $timestamp_column BETWEEN $start_time AND $end_time) SELECT $timestamp_column AS start_time FROM ( $per_asset_queries ) unioned $group_logic "
