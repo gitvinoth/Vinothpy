@@ -1,0 +1,25 @@
+
+# differential templates
+
+# DSS Baseline Template
+DSS_DIFFERENTIAL_TEMPLATE_BASELINE = """(SELECT depth, $timestamp, $parameter AS baseline_value FROM `$catalog`.silver_zone.dss WHERE asset_id = '$asset_id' AND wire = $wire AND depth BETWEEN $length_from AND $length_to AND timestamp = $baseline_timestamp ) baseline_values"""
+
+# DSS Current Values Template
+DSS_DIFFERENTIAL_TEMPLATE_CURRENT = """(SELECT depth, $timestamp, $parameter AS current_value FROM `$catalog`.silver_zone.dss WHERE asset_id = '$asset_id' AND wire = $wire AND depth BETWEEN $length_from AND $length_to AND timestamp BETWEEN $start_time AND $end_time ) current_values"""
+
+# DSS Differential Template
+DSS_DIFFERENTIAL_TEMPLATE = """(SELECT d.$timestamp, d.depth, ((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_values d JOIN baseline_values b ON d.depth = b.depth) differential"""
+
+
+# PT Gauge Baseline Template
+PT_BASELINE_TEMPLATE = """(SELECT $timestamp, asset_id, $parameter AS baseline_value FROM `$catalog`.silver_zone.$table_name WHERE asset_id = '$asset_id' AND $timestamp = $baseline_timestamp) baseline_values"""
+
+# PT Gauge Current Values Template
+PT_CURRENT_TEMPLATE = """(SELECT $timestamp, asset_id, $parameter AS current_value FROM `$catalog`.silver_zone.$table_name WHERE asset_id = '$asset_id' AND $timestamp BETWEEN $start_time AND $end_time) current_values"""
+
+# PT Gauge Differential Template
+PT_DIFFERENTIAL_TEMPLATE = """(SELECT d.$timestamp, abs((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_values d JOIN baseline_values b ON d.asset_id = b.asset_id ) differential"""
+
+
+# DSS Differential Prefix Template
+DIFFERENTIAL_PREFIX = """WITH baseline_values AS $baseline_template, current_values AS $current_template, differential AS $differential_template SELECT DISTINCT $timestamp as start_time FROM differential WHERE value_difference $operator $threshold"""
