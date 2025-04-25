@@ -1,0 +1,54 @@
+
+CTE_SLIDING_AVG_TEMPLATE = " WITH base_$table_name AS ( SELECT asset_id, $timestamp_column, $parameter FROM `$catalog`.silver_zone.$table_name WHERE asset_id IN ($asset_id_list) AND $timestamp_column BETWEEN $start_time AND $end_time) SELECT $timestamp_column AS start_time FROM ( $per_asset_queries ) unioned $group_logic "
+
+
+
+def cte_sliding_avg_query(
+   table_name: str,
+   parameter: str,
+   timestamp_column: str,
+   asset_id_list: list[str],
+   duration: int,
+   operator: str,
+   threshold: str,
+   join_condition: str = "and"
+) -> str:
+   asset_id_str = ", ".join([f"'{aid}'" for aid in asset_id_list])
+   
+   # Build shared CTE
+   cte_block = (
+       f"WITH base_{table_name} AS ("
+       f" SELECT asset_id, {timestamp_column}, {parameter} "
+       f" FROM `$catalog`.silver_zone.{table_name} "
+       f" WHERE asset_id IN ({asset_id_str}) "
+       f" AND {timestamp_column} BETWEEN $start_time AND $end_time"
+       f")"
+   )
+   # Build per-asset query blocks
+   per_asset_queries = []
+   for aid in asset_id_list:
+       per_asset_queries.append(
+           f"SELECT a.{timestamp_column} AS {timestamp_column} "
+           f"FROM (SELECT {timestamp_column} FROM base_{table_name} WHERE asset_id = '{aid}') a "
+           f"JOIN (SELECT {timestamp_column}, {parameter} FROM base_{table_name} WHERE asset_id = '{aid}') b "
+           f"ON b.{timestamp_column} BETWEEN a.{timestamp_column} AND a.{timestamp_column} + ({duration} - 1) "
+           f"GROUP BY a.{timestamp_column} "
+           f"HAVING AVG(b.{parameter}) {operator} {threshold}"
+       )
+   unioned_block = " UNION ALL ".join(per_asset_queries)
+   if join_condition.lower() == "and":
+       return (
+           f"{cte_block} "
+           f"SELECT {timestamp_column} AS start_time, {timestamp_column} + ({duration} - 1) as end_time "
+           f"FROM ( {unioned_block} ) unioned "
+           f"GROUP BY {timestamp_column} "
+           f"HAVING COUNT(*) = {len(asset_id_list)}"
+       )
+   elif join_condition.lower() == "or":
+       return (
+           f"{cte_block} "
+           f"SELECT DISTINCT {timestamp_column} AS start_time, {timestamp_column} + ({duration} - 1) as end_time "
+           f"FROM ( {unioned_block} ) unioned"
+       )
+   else:
+       raise ValueError(f"Unsupported join_condition: {join_condition}")
