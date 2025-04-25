@@ -1,0 +1,88 @@
+
+# PT Gauge Baseline Template
+PT_BASELINE_TEMPLATE = """(SELECT $timestamp, asset_id, $parameter AS baseline_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = '$asset_id' AND $timestamp = $baseline_timestamp) baseline_values"""
+
+# PT Gauge Current Values Template
+PT_CURRENT_TEMPLATE = """(SELECT $timestamp, asset_id, $parameter AS current_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = '$asset_id' AND $timestamp BETWEEN $start_time AND $end_time) current_values"""
+
+# PT Gauge Differential Template
+PT_DIFFERENTIAL_TEMPLATE = """(SELECT d.$timestamp, abs((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_values d JOIN baseline_values b ON d.asset_id = b.asset_id ) differential"""
+
+
+# DSS Differential Prefix Template
+DIFFERENTIAL_PREFIX = """WITH baseline_values AS $baseline_template, current_values AS $current_template, differential AS $differential_template SELECT DISTINCT $timestamp as start_time FROM differential WHERE value_difference $operator $threshold"""
+
+
+
+
+
+
+def generate_differential_query(
+   table_name: str,
+   baseline_template: str,
+   current_template: str,
+   differential_template: str,
+   parameter: str,
+   timestamp_column: str,
+   asset_id_list: list[str],
+   operator: str,
+   threshold: float,
+   join_condition: str = "and",
+   baseline_timestamp: int = 0
+) -> str:
+   """
+   Generates a Spark SQL differential query using template-based CTEs.
+   Produces a single top-level WITH clause across all assets.
+   """
+   with_clauses = []
+   select_blocks = []
+   for asset_id in asset_id_list:
+       safe_suffix = asset_id.lower().replace("-", "_")
+       # Generate CTE aliases
+       baseline_alias = f"baseline_{safe_suffix}"
+       current_alias = f"current_{safe_suffix}"
+       diff_alias = f"differential_{safe_suffix}"
+       # Build baseline CTE
+       baseline_cte = baseline_template \
+           .replace("$parameter", parameter) \
+           .replace("$timestamp", timestamp_column) \
+           .replace("$asset_id", asset_id) \
+           .replace("$baseline_timestamp", str(baseline_timestamp)) \
+           .replace("baseline_values", baseline_alias)
+       # Build current CTE
+       current_cte = current_template \
+           .replace("$parameter", parameter) \
+           .replace("$timestamp", timestamp_column) \
+           .replace("$asset_id", asset_id) \
+           .replace("current_values", current_alias)
+       # Build differential CTE
+       diff_cte = differential_template \
+           .replace("$timestamp", timestamp_column) \
+           .replace("current_values", current_alias) \
+           .replace("baseline_values", baseline_alias) \
+           .replace("differential", diff_alias)
+       with_clauses.extend([baseline_cte, current_cte, diff_cte])
+       # Build select from differential
+       select_blocks.append(
+           f"SELECT DISTINCT {timestamp_column} AS start_time FROM {diff_alias} "
+           f"WHERE value_difference {operator} {threshold}"
+       )
+   # Join all WITH blocks
+   full_with_block = ", ".join(with_clauses)
+   if join_condition.lower() == "and":
+       join_clause = f"SELECT DISTINCT t1.{timestamp_column} AS start_time FROM ({select_blocks[0]}) t1"
+       for i in range(1, len(select_blocks)):
+           join_clause += (
+               f" INNER JOIN ({select_blocks[i]}) t{i+1} "
+               f"ON t1.{timestamp_column} = t{i+1}.{timestamp_column}"
+           )
+       return f"WITH {full_with_block} {join_clause}"
+   elif join_condition.lower() == "or":
+       return f"WITH {full_with_block} " + " UNION ALL ".join(select_blocks)
+   else:
+       raise ValueError(f"Unsupported join_condition: {join_condition}")
+
+
+
+
+"WITH (SELECT epoch_timestamp, asset_id, pressure AS baseline_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp = 1714008000) baseline_ptg_001, (SELECT epoch_timestamp, asset_id, pressure AS current_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp BETWEEN $start_time AND $end_time) current_ptg_001, (SELECT d.epoch_timestamp, abs((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_ptg_001 d JOIN baseline_ptg_001 b ON d.asset_id = b.asset_id ) differential_ptg_001, (SELECT epoch_timestamp, asset_id, pressure AS baseline_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_002' AND epoch_timestamp = 1714008000) baseline_ptg_002, (SELECT epoch_timestamp, asset_id, pressure AS current_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_002' AND epoch_timestamp BETWEEN $start_time AND $end_time) current_ptg_002, (SELECT d.epoch_timestamp, abs((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_ptg_002 d JOIN baseline_ptg_002 b ON d.asset_id = b.asset_id ) differential_ptg_002 SELECT DISTINCT t1.epoch_timestamp AS start_time FROM (SELECT DISTINCT epoch_timestamp AS start_time FROM differential_ptg_001 WHERE value_difference > 50.0) t1 INNER JOIN (SELECT DISTINCT epoch_timestamp AS start_time FROM differential_ptg_002 WHERE value_difference > 50.0) t2 ON t1.epoch_timestamp = t2.epoch_timestamp"
