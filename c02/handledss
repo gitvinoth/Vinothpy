@@ -1,0 +1,78 @@
+def handle_dss(
+    asset_id_list: list[str],
+    data_frequency_list: list[str],
+    function: str,
+    wire: str,
+    wire_length_from: int,
+    wire_length_to: int,
+) -> str:
+    """Handles query generation for 'dss'"""
+    if len(asset_id_list) == 0 or asset_id_list is None or None in asset_id_list:
+        return "asset_id_null"
+    
+    if function in ["average", "minimum", "maximum"]:
+        first_function_subquery = generate_subquery(
+            DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION, asset_id_list[0], 1
+        )
+        join_template = (
+            " on condition_1.epoch_timestamp = condition_$index2.epoch_timestamp"
+        )
+        function_subqueries = [
+            f" inner join {generate_subquery(DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+            for i, asset_id in enumerate(asset_id_list[1:])
+        ]
+        function_subquery = first_function_subquery + " ".join(function_subqueries)
+        inner_query = (
+            function_subquery.replace("$function", DSS_FUNCTION_MAPPING[function])
+            .replace("$length_from", str(wire_length_from))
+            .replace("$length_to", str(wire_length_to))
+            .replace("$wire", wire)
+        )
+        complete_query = DSS_PREFIX + inner_query
+        return complete_query
+    
+    elif function in ["differential"]:
+        full_query = (
+            DIFFERENTIAL_PREFIX.replace(
+                "$baseline_template", DSS_DIFFERENTIAL_TEMPLATE_BASELINE
+            )
+            .replace("$current_template", DSS_DIFFERENTIAL_TEMPLATE_CURRENT)
+            .replace("$differential_template", DSS_DIFFERENTIAL_TEMPLATE)
+        )
+        first_subquery = generate_subquery(full_query, asset_id_list[0], 1)
+        join_template = (
+            " on condition_1.epoch_timestamp = condition_$index2.epoch_timestamp"
+        )
+        function_subqueries = [
+            f" inner join {generate_subquery(DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+            for i, asset_id in enumerate(asset_id_list[1:])
+        ]
+        full_query = first_subquery + " ".join(function_subqueries)
+        complete_query = (
+            full_query.replace("$wire", wire)
+            .replace("$length_from", str(wire_length_from))
+            .replace("$length_to", str(wire_length_to))
+        )
+        return complete_query
+    
+    elif function in ["raw"]:
+        print("In raw")
+        first_function_subquery = generate_subquery(
+            DSS_TEMPLATE_WITHOUT_CLASS_RAW, asset_id_list[0], 1
+        )
+        print(first_function_subquery)
+        join_template = (
+            " on condition_1.epoch_timestamp = condition_$index2.epoch_timestamp"
+        )
+        function_subqueries = [
+            f" inner join {generate_subquery(DSS_TEMPLATE_WITHOUT_CLASS_RAW, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+            for i, asset_id in enumerate(asset_id_list[1:])
+        ]
+        function_subquery = first_function_subquery + " ".join(function_subqueries)
+        inner_query = (
+            function_subquery.replace("$wire", wire)
+            .replace("$length_from", str(wire_length_from))
+            .replace("$length_to", str(wire_length_to))
+        )
+        complete_query = DSS_PREFIX + inner_query
+        return complete_query
