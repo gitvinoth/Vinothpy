@@ -1,0 +1,45 @@
+
+GRP_SLIDING_AVG_TEMPLATE = " SELECT CAST(($start_time + $duration * a.grp) AS bigint) AS timestamp FROM ( SELECT FLOOR((epoch_timestamp - $start_time)/$duration) AS grp FROM `$catalog`.silver_zone.microseismic_events WHERE asset_id = '$asset_id' $class_filter AND epoch_timestamp BETWEEN $start_time AND $end_time) a JOIN ( SELECT FLOOR((epoch_timestamp - $start_time)/$duration) AS grp FROM `$catalog`.silver_zone.microseismic_events WHERE asset_id = '$asset_id' $class_filter AND epoch_timestamp BETWEEN $start_time AND $end_time) b ON b.grp BETWEEN a.grp AND a.grp + ($duration - 1) GROUP BY a.grp HAVING AVG(COUNT(*)) $operator $threshold"
+
+def grp_sliding_avg_query(
+    asset_id_list: list[str],
+    duration: int,
+    operator: str,
+    threshold: str,
+    join_condition: str,
+    clss: int = None
+) -> str:
+    class_filter = f"AND class = {clss}" if clss is not None else ""
+    queries = [
+        f"""
+        SELECT timestamp
+        FROM (
+            {GRP_SLIDING_AVG_TEMPLATE
+                .replace("$asset_id", asset_id)
+                .replace("$class_filter", class_filter)
+                .replace("$duration", str(duration))
+                .replace("$operator", operator)
+                .replace("$threshold", threshold)
+            }
+        ) AS asset_{i+1}
+        """ for i, asset_id in enumerate(asset_id_list)
+    ]
+    unioned_block = " UNION ALL ".join(queries)
+    if join_condition.lower() == "and":
+        return f"""
+SELECT timestamp AS start_time
+FROM (
+    {unioned_block}
+) unioned
+GROUP BY timestamp
+HAVING COUNT(*) = {len(asset_id_list)}
+"""
+    elif join_condition.lower() == "or":
+        return f"""
+SELECT DISTINCT timestamp AS start_time
+FROM (
+    {unioned_block}
+) unioned
+"""
+    else:
+        raise ValueError(f"Unsupported join_condition: {join_condition}")
