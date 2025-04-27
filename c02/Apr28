@@ -1,0 +1,27 @@
+Param
+
+generate_differential_query(
+   table_name="pt_gauge",
+   baseline_template=PT_BASELINE_TEMPLATE,
+   current_template=PT_CURRENT_TEMPLATE,
+   differential_template=PT_DIFFERENTIAL_TEMPLATE,
+   parameter="pressure",
+   timestamp_column="epoch_timestamp",
+   asset_id_list=["PTG_001", "PTG_002"],
+   operator=">",
+   threshold=50.0,
+   join_condition="and",
+   baseline_timestamp=1714008000
+)
+
+
+Query
+
+
+
+
+
+
+
+"WITH baseline_ptg_001 AS ( (SELECT epoch_timestamp, asset_id, pressure AS baseline_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp = 1714008000) baseline_ptg_001 ) ,  current_ptg_001 AS ( (SELECT epoch_timestamp, asset_id, pressure AS current_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp BETWEEN $start_time AND $end_time) current_ptg_001 ) ,  differential_ptg_001 AS ( (SELECT d.epoch_timestamp, abs((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_ptg_001 d JOIN baseline_ptg_001 b ON d.asset_id = b.asset_id ) differential_ptg_001 ) ,  baseline_ptg_002 AS ( (SELECT epoch_timestamp, asset_id, pressure AS baseline_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_002' AND epoch_timestamp = 1714008000) baseline_ptg_002 ) ,  current_ptg_002 AS ( (SELECT epoch_timestamp, asset_id, pressure AS current_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_002' AND epoch_timestamp BETWEEN $start_time AND $end_time) current_ptg_002 ) ,  differential_ptg_002 AS ( (SELECT d.epoch_timestamp, abs((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_ptg_002 d JOIN baseline_ptg_002 b ON d.asset_id = b.asset_id ) differential_ptg_002 ),detected_anomalies AS ( SELECT DISTINCT t1.start_time FROM (SELECT DISTINCT epoch_timestamp AS start_time FROM differential_ptg_001 WHERE value_difference > 50.0) t1 INNER JOIN (SELECT DISTINCT epoch_timestamp AS start_time FROM differential_ptg_002 WHERE value_difference > 50.0) t2 ON t1.start_time = t2.start_time ), generator AS (SELECT posexplode(sequence(0, -1)) AS (pos, shift) ), expanded_anomalies AS ( SELECT detected_anomalies.start_time + shift AS start_time, detected_anomalies.start_time + shift + (0 - 1) AS end_time FROM detected_anomalies CROSS JOIN generator ), real_timestamps AS (SELECT DISTINCT epoch_timestamp AS timestamp FROM `$catalog`.silver_zone.pt_gauge WHERE epoch_timestamp BETWEEN $start_time AND $end_time ), final_anomalies AS (  SELECT e.start_time, e.end_time FROM expanded_anomalies e INNER JOIN real_timestamps r ON e.start_time = r.timestamp) SELECT DISTINCT start_time, end_time FROM final_anomalies"
+
