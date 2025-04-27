@@ -1,7 +1,7 @@
 
 handle_pressure_temperature(
-   asset_id_list=["PTG_001"],
-   data_frequency_list=[60],
+   asset_id_list=["PTG_001","PTG_003"],
+   data_frequency_list=[60,60],
    function="average",
    duration=10,
    join_condition="and",
@@ -10,6 +10,5 @@ handle_pressure_temperature(
    threshold=50.0
 )
 
-"select min(epoch_timestamp) as start_time, max(epoch_timestamp) as end_time from ( select epoch_timestamp, diff, grp, max(grp) over (order by epoch_timestamp rows between unbounded preceding and current row) group_member from (select epoch_timestamp, diff, case when diff>$data_frequency then sum(diff) OVER (ORDER BY epoch_timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select epoch_timestamp, coalesce((epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1) as diff from (WITH base_ptgauge_$asset_index AS (SELECT epoch_timestamp, pressure  FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp BETWEEN $start_time AND $end_time) SELECT a.epoch_timestamp AS timestamp FROM base_ptgauge_$asset_index a JOIN base_ptgauge_$asset_index b  ON b.epoch_timestamp BETWEEN a.epoch_timestamp AND a.epoch_timestamp + (10 - 1) GROUP BY a.epoch_timestamp HAVING AVG(b.pressure) > 50.0) condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max(epoch_timestamp) - min(epoch_timestamp) >= $duration or min(epoch_timestamp) = $start_time - $data_frequency or max(epoch_timestamp) = $end_time"
 
-
+"WITH base_ptgauge_$asset_index AS (SELECT epoch_timestamp, pressure  FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp BETWEEN $start_time AND $end_time) SELECT a.epoch_timestamp AS timestamp FROM base_ptgauge_$asset_index a JOIN base_ptgauge_$asset_index b  ON b.epoch_timestamp BETWEEN a.epoch_timestamp AND a.epoch_timestamp + (10 - 1) GROUP BY a.epoch_timestamp HAVING AVG(b.pressure) > 50.0 inner join WITH base_ptgauge_$asset_index AS (SELECT epoch_timestamp, pressure  FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_003' AND epoch_timestamp BETWEEN $start_time AND $end_time) SELECT a.epoch_timestamp AS timestamp FROM base_ptgauge_$asset_index a JOIN base_ptgauge_$asset_index b  ON b.epoch_timestamp BETWEEN a.epoch_timestamp AND a.epoch_timestamp + (10 - 1) GROUP BY a.epoch_timestamp HAVING AVG(b.pressure) > 50.0 on condition_1.timestamp = condition_2.timestamp"
