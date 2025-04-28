@@ -1,0 +1,18 @@
+
+
+handle_flow_meter(
+   asset_id_list=["FLM_002","FLM_001"],
+   data_frequency_list=[5,10],
+   function="differential",
+   duration=10,
+   join_condition="and",
+   parameter="surface_flow_rate",
+   operator= ">",
+   threshold= 20.0,
+   baseline_timestamp= 1679729460
+)
+
+
+
+
+"WITH baseline_flm_002 AS ( SELECT timestamp, asset_id, surface_flow_rate AS baseline_value FROM `$catalog`.silver_zone.flowmeter WHERE asset_id = 'FLM_002' AND timestamp = 1679729460 ), current_flm_002 AS ( SELECT timestamp, asset_id, surface_flow_rate AS current_value FROM `$catalog`.silver_zone.flowmeter WHERE asset_id = 'FLM_002' AND timestamp BETWEEN $start_time AND $end_time ), differential_flm_002 AS ( SELECT d.timestamp,ABS((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_flm_002 d JOIN baseline_flm_002 b ON d.asset_id = b.asset_id ), baseline_flm_001 AS ( SELECT timestamp, asset_id, surface_flow_rate AS baseline_value FROM `$catalog`.silver_zone.flowmeter WHERE asset_id = 'FLM_001' AND timestamp = 1679729460 ), current_flm_001 AS ( SELECT timestamp, asset_id, surface_flow_rate AS current_value FROM `$catalog`.silver_zone.flowmeter WHERE asset_id = 'FLM_001' AND timestamp BETWEEN $start_time AND $end_time ), differential_flm_001 AS ( SELECT d.timestamp,ABS((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_flm_001 d JOIN baseline_flm_001 b ON d.asset_id = b.asset_id ) (SELECT timestamp AS start_time,timestamp + (10 - 1) AS end_time FROM differential_flm_002 WHERE value_difference > 20.0) t1 INNER JOIN (SELECT timestamp AS start_time,timestamp + (10 - 1) AS end_time FROM differential_flm_001 WHERE value_difference > 20.0) t2 ON t1.start_time <= t2.end_time AND t2.start_time <= t1.end_time"
