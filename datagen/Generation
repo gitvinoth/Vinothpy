@@ -1,0 +1,135 @@
+# Databricks notebook source
+# MAGIC %run ../src/utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../src/utils/databricks/constants
+
+# COMMAND ----------
+
+# MAGIC %run ../src/utils/databricks/utility_functions
+
+# COMMAND ----------
+
+# MAGIC %run ../src/utils/databricks/workflow_metadata_utility
+
+# COMMAND ----------
+
+# for on-prem begin
+try:
+    if dbutils:
+        pass
+except NameError:
+    from src.utils.logger import configure_logger
+    from src.utils.on_premise.utility_functions import (
+        get_task_env,
+        get_spark_context
+    )
+    from src.utils.on_premise.constants import LOG_FILE_TYPE
+
+# COMMAND ----------
+
+import dbldatagen as dg
+
+from datetime import datetime
+from pyspark.sql.functions import col, date_format
+from pyspark.sql.types import TimestampType, DoubleType, LongType, StringType
+
+# COMMAND ----------
+
+def generate_ptg_silver_data(spark, logger, start_date_str, end_date_str, min_asset_id, max_asset_id, catalog, min_pressure, max_pressure, min_temperature, max_temperature) -> None:
+    try:
+        interval = "1 second"
+        seconds = int(interval.split(" ")[0])
+        
+        start_date_str = start_date_str.strip() + " 00:00:00"
+        end_date_str = end_date_str.strip() + " 23:59:59"
+
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
+        end_date = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
+        
+        rows_count = int((end_date - start_date).total_seconds() / seconds) + 1
+
+        zone = "silver_zone"
+        table = "pt_gauge"
+
+        fully_qualified_table = f"`{catalog}`.{zone}.{table}"
+
+        logger.info(f"Generating PT Gauge data from {start_date} to {end_date} for asset ids from {min_asset_id} to {max_asset_id}...")
+        logger.info(f"Row count : {rows_count}")
+        logger.info(f"Min Pressure : {min_pressure} | Max Pressure : {max_pressure}")
+        logger.info(f"Min Temperature : {min_temperature} | Max Temperature : {max_temperature}")
+        
+        logger.info(f"Writing data into table : {fully_qualified_table}")
+
+        for i in range(min_asset_id, max_asset_id + 1):
+            synthetic_data_spec = (
+            dg.DataGenerator(spark, name="ptgauge_synthetic_data", rows=rows_count)
+            .withColumn(
+                    "timestamp",
+                    TimestampType(),
+                    begin=start_date_str,
+                    end=end_date_str,
+                    interval=interval,
+                    random=False,
+                )
+            .withColumn(
+                    "epoch_timestamp",
+                    LongType(),
+                    expr="unix_timestamp(timestamp)",
+                )
+            .withColumn("device_id", StringType(), values=[f'PTG-{i:03}-ID'], random=False)
+            .withColumn("asset_id", StringType(), values=[f'PTG_{i:03}'], random=False)
+            .withColumn("pressure", DoubleType(), minValue=min_pressure, maxValue=max_pressure, random=True)
+            .withColumn("temperature", DoubleType(), minValue=min_temperature, maxValue=max_temperature, random=True)
+            .withColumn("source", StringType(), values=["pt_gauge"], random=False)
+            .withColumn("signal_strength", DoubleType(), values=[-20.89], random=False)
+            .withColumn("last_updated_date", TimestampType(), expr="current_timestamp()")
+            )
+
+            pt_gauge_data = synthetic_data_spec.build().drop("timestamp")
+
+            logger.info(f"Generated data for asset PTG-{i:03} | Row count: {rows_count}")
+
+            # Write directly to the silver table
+            pt_gauge_data.write.mode("append").format("delta").saveAsTable(fully_qualified_table)
+
+        logger.info(f"Optimizing the table : {fully_qualified_table}")
+        key_column = "asset_id, epoch_timestamp"
+        optimize_query = f"""optimize {fully_qualified_table} zorder by ({key_column})"""
+        spark.sql(optimize_query)
+
+    except Exception as e:
+        logger.error(f"Error in generate_ptg_silver_data() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def main():
+    app_name = "pt_gauge_data_generation"
+    job_start_timestamp = datetime.now()
+    date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+    logger = configure_logger(app_name, date)
+
+    logger.info("Fetch spark context...")
+    spark = get_spark_context()
+
+    start_date_str = get_task_env("start_date") # Date format yyyy-mm-dd
+    end_date_str = get_task_env("end_date") # Date format yyyy-mm-dd
+    catalog = get_task_env("catalog") # For writing into specific tenant
+    min_asset_id = int(get_task_env("min_asset_id"))
+    max_asset_id = int(get_task_env("max_asset_id"))
+    min_pressure = float(get_task_env("min_pressure"))
+    max_pressure = float(get_task_env("max_pressure"))
+    min_temperature = float(get_task_env("min_temperature"))
+    max_temperature = float(get_task_env("max_temperature"))
+
+    generate_ptg_silver_data(spark, logger, start_date_str, end_date_str, min_asset_id, max_asset_id, catalog, min_pressure, max_pressure, min_temperature, max_temperature)
+
+    logger.info("PT Gauge data generated successfully")
+
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    main()
