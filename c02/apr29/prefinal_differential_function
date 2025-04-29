@@ -1,0 +1,94 @@
+def generate_differential_query_for_multi_asset_with_baseline_current(
+    table_name: str,
+    baseline_template: str,
+    current_template: str,
+    differential_template: str,
+    prefix_template: str,
+    suffix_template: str,
+    parameter: str,
+    timestamp_column: str,
+    asset_id_list: list[str],
+    operator: str,
+    threshold: float,
+    data_frequency_list: list[int],
+    join_condition: str,
+    baseline_timestamp_list: list[int],
+    duration: int,
+    threshold_unit: str = "%"
+) -> str:
+    """
+    Generates multi-asset differential query
+    """
+    try:
+        all_cte_blocks = []
+        final_cte_names = []
+
+        for idx, asset_id in enumerate(asset_id_list):
+            safe_suffix = asset_id.lower().replace("-", "_")
+            baseline_cte_name = f"baseline_{safe_suffix}"
+            current_cte_name = f"current_{safe_suffix}"
+            differential_cte_name = f"differential_{safe_suffix}"
+            final_cte_name = f"cte_{safe_suffix}"
+            final_cte_names.append(final_cte_name)
+
+            # Baseline CTE
+            baseline_cte = (
+                f"{baseline_cte_name} AS ("
+                f"{baseline_template.replace('$parameter', parameter).replace('$timestamp', timestamp_column).replace('$asset_id', asset_id).replace('$baseline_timestamp', str(baseline_timestamp_list[idx])).replace('$table_name', table_name)}"
+                f")"
+            ).strip()
+
+            # Current CTE
+            current_cte = (
+                f"{current_cte_name} AS ("
+                f"{current_template.replace('$parameter', parameter).replace('$timestamp', timestamp_column).replace('$asset_id', asset_id).replace('$table_name', table_name)}"
+                f")"
+            ).strip()
+
+            # Differential CTE
+            if threshold_unit == "%":
+                diff_formula = "ABS((d.current_value - b.baseline_value) / b.baseline_value) * 100"
+            else:
+                diff_formula = "(d.current_value - b.baseline_value)"
+
+            differential_cte = (
+                f"{differential_cte_name} AS ("
+                f"{differential_template.replace('$timestamp', timestamp_column).replace('$diff_formula', diff_formula).replace('current_values', current_cte_name).replace('baseline_values', baseline_cte_name)}"
+                f")"
+            ).strip()
+
+            # Core select
+            core_select = f"SELECT d.{timestamp_column} FROM {differential_cte_name} d WHERE d.value_difference {operator} {threshold}".strip()
+
+            # Per asset customized prefix and suffix
+            per_asset_prefix = prefix_template.replace('$timestamp', timestamp_column).replace('$data_frequency', str(data_frequency_list[idx])).replace('$duration', str(duration))
+            per_asset_suffix = suffix_template.replace('$timestamp', timestamp_column).replace('$data_frequency', str(data_frequency_list[idx])).replace('$duration', str(duration))
+
+            # Full anomaly detection CTE
+            final_cte = (
+                f"{final_cte_name} AS ("
+                f"{per_asset_prefix} {core_select} {per_asset_suffix}"
+                f")"
+            ).strip()
+
+            # Add all CTEs
+            all_cte_blocks.extend([baseline_cte, current_cte, differential_cte, final_cte])
+
+        # Stitch WITH clause
+        with_clause = "WITH " + ", ".join(all_cte_blocks)
+
+        # Final SELECT
+        if join_condition.lower() == "or":
+            final_query = " UNION ALL ".join([f"SELECT start_time, end_time FROM {cte}" for cte in final_cte_names])
+        elif join_condition.lower() == "and":
+            join_query = f"SELECT t1.start_time, t1.end_time FROM {final_cte_names[0]} t1"
+            for idx in range(1, len(final_cte_names)):
+                join_query += f" INNER JOIN {final_cte_names[idx]} t{idx+1} ON t1.start_time <= t{idx+1}.end_time AND t{idx+1}.start_time <= t1.end_time"
+            final_query = join_query
+        else:
+            raise ValueError(f"Unsupported join_condition: {join_condition}")
+
+        return f"{with_clause} {final_query}".strip()
+
+    except Exception as e:
+        return f"-- Error generating corrected differential query: {str(e)}"
