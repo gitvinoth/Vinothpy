@@ -1,139 +1,18 @@
 
 
-
-
-
-WITH cte_ptg_001 AS (
-  select
-    min(epoch_timestamp) as start_time,
-    max(epoch_timestamp) as end_time
-  from
-    (
-      select
-        epoch_timestamp,
-        diff,
-        grp,
-        max(grp) over (
-            order by epoch_timestamp
-            rows between unbounded preceding and current row
-          ) group_member
-      from
-        (
-          select
-            epoch_timestamp,
-            diff,
-            case
-              when
-                diff > 5
-              then
-                sum(diff) OVER (
-                    ORDER BY epoch_timestamp
-                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                  )
-            end grp
-          from
-            (
-              select
-                epoch_timestamp,
-                coalesce(
-                  (epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1
-                ) as diff
-              from
-                (
-                  SELECT
-                    d.epoch_timestamp
-                  FROM
-                    (
-                      SELECT
-                        d.epoch_timestamp,
-                        ABS((d.current_value - b.baseline_value) / b.baseline_value)
-                        * 100 AS value_difference
-                      FROM
-                        current_ptg_001 d
-                          JOIN baseline_ptg_001 b
-                            ON d.asset_id = b.asset_id
-                    ) d
-                  WHERE
-                    d.value_difference > 50.0
-                ) condition_group
-            ) timestamp_diffs
-        ) anomaly_group_step_1
-    ) anomaly_group
-  group by
-    group_member
-  having
-    max(epoch_timestamp) - min(epoch_timestamp) >= 10
-    or min(epoch_timestamp) = $start_time - 5
-    or max(epoch_timestamp) = $end_time
-),
-cte_ptg_002 AS (
-  select
-    min(epoch_timestamp) as start_time,
-    max(epoch_timestamp) as end_time
-  from
-    (
-      select
-        epoch_timestamp,
-        diff,
-        grp,
-        max(grp) over (
-            order by epoch_timestamp
-            rows between unbounded preceding and current row
-          ) group_member
-      from
-        (
-          select
-            epoch_timestamp,
-            diff,
-            case
-              when
-                diff > 6
-              then
-                sum(diff) OVER (
-                    ORDER BY epoch_timestamp
-                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                  )
-            end grp
-          from
-            (
-              select
-                epoch_timestamp,
-                coalesce(
-                  (epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1
-                ) as diff
-              from
-                (
-                  SELECT
-                    d.epoch_timestamp
-                  FROM
-                    (
-                      SELECT
-                        d.epoch_timestamp,
-                        ABS((d.current_value - b.baseline_value) / b.baseline_value)
-                        * 100 AS value_difference
-                      FROM
-                        current_ptg_002 d
-                          JOIN baseline_ptg_002 b
-                            ON d.asset_id = b.asset_id
-                    ) d
-                  WHERE
-                    d.value_difference > 50.0
-                ) condition_group
-            ) timestamp_diffs
-        ) anomaly_group_step_1
-    ) anomaly_group
-  group by
-    group_member
-  having
-    max(epoch_timestamp) - min(epoch_timestamp) >= 10
-    or min(epoch_timestamp) = $start_time - 6
-    or max(epoch_timestamp) = $end_time
+generate_sliding_avg_query_for_multi_asset(
+   table_name="pt_gauge",
+   avg_prefix_template=PT_PREFIX,
+   avg_suffix_template=PT_SUFFIX,
+   parameter="pressure",
+   timestamp_column="epoch_timestamp",
+   asset_id_list=["PTG_001", "PTG_002"],
+   operator=">",
+   threshold=50.0,
+   data_frequency_list=[5, 6],
+   join_condition="and",
+   duration=10
 )
-SELECT
-  t1.start_time,
-  t1.end_time
-FROM
-  cte_ptg_001 t1
-    INNER JOIN cte_ptg_002 t2
-      ON t1.start_time <= t2.end_time
-      AND t2.start_time <= t1.end_time
+
+'WITH cte_ptg_001 AS (select min(epoch_timestamp) as start_time, max(epoch_timestamp) as end_time from ( select epoch_timestamp, diff, grp, max(grp) over (order by epoch_timestamp rows between unbounded preceding and current row) group_member from (select epoch_timestamp, diff, case when diff>5 then sum(diff) OVER (ORDER BY epoch_timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select epoch_timestamp, coalesce((epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1) as diff from ( SELECT a.epoch_timestamp FROM base_pt_gauge a JOIN base_pt_gauge b ON b.epoch_timestamp BETWEEN a.epoch_timestamp AND a.epoch_timestamp + (10 - 1) GROUP BY a.epoch_timestamp HAVING AVG(b.pressure) > 50.0 ) condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max(epoch_timestamp) - min(epoch_timestamp) >= 10 or min(epoch_timestamp) = $start_time - 5 or max(epoch_timestamp) = $end_time), cte_ptg_002 AS (select min(epoch_timestamp) as start_time, max(epoch_timestamp) as end_time from ( select epoch_timestamp, diff, grp, max(grp) over (order by epoch_timestamp rows between unbounded preceding and current row) group_member from (select epoch_timestamp, diff, case when diff>6 then sum(diff) OVER (ORDER BY epoch_timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select epoch_timestamp, coalesce((epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1) as diff from ( SELECT a.epoch_timestamp FROM base_pt_gauge a JOIN base_pt_gauge b ON b.epoch_timestamp BETWEEN a.epoch_timestamp AND a.epoch_timestamp + (10 - 1) GROUP BY a.epoch_timestamp HAVING AVG(b.pressure) > 50.0 ) condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max(epoch_timestamp) - min(epoch_timestamp) >= 10 or min(epoch_timestamp) = $start_time - 6 or max(epoch_timestamp) = $end_time) SELECT GREATEST(t1.start_time, t2.start_time) AS start_time, LEAST(t1.end_time, t2.end_time) AS end_time FROM cte_ptg_001 t1 INNER JOIN cte_ptg_002 t2 ON t1.start_time <= t2.end_time AND t2.start_time <= t1.end_time'
+
