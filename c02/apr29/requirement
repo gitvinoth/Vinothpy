@@ -1,0 +1,6 @@
+
+PT_PREFIX = "select min(epoch_timestamp) as start_time, max(epoch_timestamp) as end_time from ( select epoch_timestamp, diff, grp, max(grp) over (order by epoch_timestamp rows between unbounded preceding and current row) group_member from (select epoch_timestamp, diff, case when diff>$data_frequency then sum(diff) OVER (ORDER BY epoch_timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select epoch_timestamp, coalesce((epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1) as diff from ("
+
+PT_SUFFIX = ") condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max(epoch_timestamp) - min(epoch_timestamp) >= $duration or min(epoch_timestamp) = $start_time - $data_frequency or max(epoch_timestamp) = $end_time"
+
+
