@@ -1,24 +1,73 @@
-generate_differential_query_for_multi_asset_with_baseline_current(
-   table_name="pt_gauge",
-   baseline_template=PT_BASELINE_TEMPLATE,
-   current_template=PT_CURRENT_TEMPLATE,
-   differential_template=PT_DIFFERENTIAL_TEMPLATE,
-   prefix_template=PT_PREFIX,
-   suffix_template=PT_SUFFIX,
-   parameter="pressure",
-   timestamp_column="epoch_timestamp",
-   asset_id_list=["PTG_001"],
-   operator=">",
-   threshold=50.0,
-   data_frequency_list=[5],
-   join_condition="AND",
-   duration=10,
-   baseline_timestamp_list=[1714008000],
-   threshold_unit="%"
-)
-
-"WITH baseline_ptg_001 AS (SELECT epoch_timestamp, asset_id, pressure AS baseline_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp = 1714008000 ), current_ptg_001 AS (SELECT epoch_timestamp, asset_id, pressure AS current_value FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = 'PTG_001' AND epoch_timestamp BETWEEN $start_time AND $end_time ), differential_ptg_001 AS (SELECT d.epoch_timestamp,ABS((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_ptg_001 d JOIN baseline_ptg_001 b ON d.asset_id = b.asset_id ), cte_ptg_001 AS (select min(epoch_timestamp) as start_time, max(epoch_timestamp) as end_time from ( select epoch_timestamp, diff, grp, max(grp) over (order by epoch_timestamp rows between unbounded preceding and current row) group_member from (select epoch_timestamp, diff, case when diff>5 then sum(diff) OVER (ORDER BY epoch_timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select epoch_timestamp, coalesce((epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1) as diff from ( SELECT d.epoch_timestamp FROM differential_ptg_001 d WHERE d.value_difference > 50.0 ) condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max(epoch_timestamp) - min(epoch_timestamp) >= 10 or min(epoch_timestamp) = $start_time - 5 or max(epoch_timestamp) = $end_time) SELECT GREATEST(t1.start_time) AS start_time, LEAST(t1.end_time) AS end_time FROM cte_ptg_001 t1"
 
 
-[WRONG_NUM_ARGS.WITHOUT_SUGGESTION] The `greatest` requires > 1 parameters but the actual number is 1. Please, refer to 'https://spark.apache.org/docs/latest/sql-ref-functions.html' for a fix. SQLSTATE: 42605
 
+
+
+def generate_sliding_avg_query_for_multi_asset(
+    table_name: str,
+    avg_prefix_template: str,
+    avg_suffix_template: str,
+    parameter: str,
+    timestamp_column: str,
+    asset_id_list: list[str],
+    operator: str,
+    threshold: float,
+    data_frequency_list: list[int],
+    join_condition: str = "and",
+    duration: int = 10
+) -> str:
+    """
+    Generates a sliding average anomaly detection query for multiple assets.
+    """
+    try:
+        if not asset_id_list or not data_frequency_list or len(asset_id_list) != len(data_frequency_list):
+            return "Invalid asset_id_list or data_frequency_list input"
+
+        asset_cte_queries = []
+        asset_cte_names = []
+
+        #  Step 1: Shared base CTE
+        asset_id_str = ", ".join([f"'{aid}'" for aid in asset_id_list])
+        base_cte = f"WITH base_{table_name} AS ( SELECT asset_id, {timestamp_column}, {parameter} FROM `$catalog`.silver_zone.{table_name} WHERE asset_id IN ({asset_id_str}) AND {timestamp_column} BETWEEN $start_time AND $end_time )"
+
+        #  Step 2: Generate CTE per asset
+        for idx, (asset_id, data_frequency) in enumerate(zip(asset_id_list, data_frequency_list)):
+            cte_name = f"cte_{asset_id.lower()}"
+            asset_cte_names.append(cte_name)
+
+            sliding_avg_condition = f"SELECT {timestamp_column} FROM ( SELECT {timestamp_column} FROM base_{table_name} WHERE asset_id = '{asset_id}' ) a JOIN ( SELECT {timestamp_column}, {parameter} FROM base_{table_name} WHERE asset_id = '{asset_id}' ) b ON b.{timestamp_column} BETWEEN a.{timestamp_column} AND a.{timestamp_column} + ({duration} - 1) GROUP BY a.{timestamp_column} HAVING AVG(b.{parameter}) {operator} {threshold}"
+
+            anomaly_grouping = f"{avg_prefix_template.replace('$data_frequency', str(data_frequency))} {sliding_avg_condition} {avg_suffix_template.replace('$data_frequency', str(data_frequency))}"
+
+            asset_cte_queries.append(f"{cte_name} AS ({anomaly_grouping})")
+
+        #  Step 3: Combine all CTEs
+        cte_block = base_cte + ", " + ", ".join(asset_cte_queries)
+
+        #  Step 4: Build Join or Union All block
+        if join_condition.lower() == "and":
+            join_conditions = "\n".join([
+                f"INNER JOIN {cte} t{idx+2} ON t1.start_time <= t{idx+2}.end_time AND t{idx+2}.start_time <= t1.end_time"
+                for idx, cte in enumerate(asset_cte_names[1:])
+            ])
+            greatest_fields = ", ".join([f"t{i+1}.start_time" for i in range(len(asset_cte_names))])
+            least_fields = ", ".join([f"t{i+1}.end_time" for i in range(len(asset_cte_names))])
+            final_query = (
+                f"{cte_block} "
+                f"SELECT GREATEST({greatest_fields}) AS start_time, LEAST({least_fields}) AS end_time "
+                f"FROM {asset_cte_names[0]} t1 "
+                f"{join_conditions}"
+            )
+        else:  # join_condition == "or"
+            union_all_assets = " UNION ALL ".join([
+                f"SELECT start_time, end_time FROM {cte}" for cte in asset_cte_names
+            ])
+            final_query = (
+                f"{cte_block} "
+                f"SELECT start_time, end_time FROM ( {union_all_assets} ) all_anomalies"
+            )
+
+        return final_query
+
+    except Exception as e:
+        return f"-- Error generating corrected differential query: {str(e)}"
