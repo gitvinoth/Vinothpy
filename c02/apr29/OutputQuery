@@ -1,0 +1,73 @@
+
+
+
+--BETWEEN 1679702400 AND 1679738400
+select
+  min(epoch_timestamp) as start_time,
+  max(epoch_timestamp) as end_time
+from
+  (
+    select
+      epoch_timestamp,
+      diff,
+      grp,
+      max(grp) over (
+        order by
+          epoch_timestamp rows between unbounded preceding
+          and current row
+      ) group_member
+    from
+      (
+        select
+          epoch_timestamp,
+          diff,
+          case
+            when diff > [5, 6] then sum(diff) OVER (
+              ORDER BY
+                epoch_timestamp ROWS BETWEEN UNBOUNDED PRECEDING
+                AND CURRENT ROW
+            )
+          end grp
+        from
+          (
+            select
+              epoch_timestamp,
+              coalesce(
+                (
+                  epoch_timestamp - lag(epoch_timestamp) OVER (
+                    ORDER BY
+                      epoch_timestamp
+                  )
+                ),
+                1
+              ) as diff
+            from
+              (
+                SELECT
+                  d.epoch_timestamp
+                FROM
+                  (
+                    SELECT
+                      d.epoch_timestamp,
+                      ABS(
+                        (d.current_value - b.baseline_value) / b.baseline_value
+                      ) * 100 AS value_difference
+                    FROM
+                      current_ptg_002 d
+                      JOIN baseline_ptg_002 b ON d.asset_id = b.asset_id
+                  ) d
+                WHERE
+                  d.value_difference > 50.0
+              ) condition_group
+          ) timestamp_diffs
+      ) anomaly_group_step_1
+  ) anomaly_group
+group by
+  group_member
+having
+  max(epoch_timestamp) - min(epoch_timestamp) >= 10
+  or min(epoch_timestamp) = $start_time - [5, 6]
+  or max(epoch_timestamp) = $end_time
+
+
+
