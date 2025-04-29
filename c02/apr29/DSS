@@ -1,0 +1,56 @@
+DSS
+
+
+# DSS Differential Prefix Template
+DIFFERENTIAL_PREFIX = "WITH baseline_values AS $baseline_template, current_values AS $current_template, differential AS $differential_template SELECT DISTINCT $timestamp as start_time FROM differential WHERE value_difference $operator $threshold"
+
+
+
+# DSS Baseline Template
+DSS_DIFFERENTIAL_TEMPLATE_BASELINE = "(SELECT depth, $timestamp, $parameter AS baseline_value FROM `$catalog`.silver_zone.dss WHERE asset_id = '$asset_id' AND wire = $wire AND depth BETWEEN $length_from AND $length_to AND timestamp = $baseline_timestamp ) baseline_values"
+
+# DSS Current Values Template
+DSS_DIFFERENTIAL_TEMPLATE_CURRENT = "(SELECT depth, $timestamp, $parameter AS current_value FROM `$catalog`.silver_zone.dss WHERE asset_id = '$asset_id' AND wire = $wire AND depth BETWEEN $length_from AND $length_to AND timestamp BETWEEN $start_time AND $end_time ) current_values"
+
+# DSS Differential Template
+DSS_DIFFERENTIAL_TEMPLATE = "(SELECT d.$timestamp, d.depth, ((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_values d JOIN baseline_values b ON d.depth = b.depth) differential"
+
+
+
+DIFF_PREFIX = "select min($timestamp) as start_time, max($timestamp) as end_time from ( select $timestamp, diff, grp, max(grp) over (order by $timestamp rows between unbounded preceding and current row) group_member from (select $timestamp, diff, case when diff>$data_frequency then sum(diff) OVER (ORDER BY $timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select $timestamp, coalesce(($timestamp - lag($timestamp) OVER (ORDER BY $timestamp)), 1) as diff from ("
+
+DIFF_SUFFIX = ") condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max($timestamp) - min($timestamp) >= $duration or min($timestamp) = $start_time - $data_frequency or max($timestamp) = $end_time"
+
+
+def handle_dss(
+    asset_id_list: list[str],
+    data_frequency_list: list[str],
+    function: str,
+    wire: str,
+    wire_length_from: int,
+    wire_length_to: int,
+) -> str:
+    """Handles query generation for 'dss'"""
+    if len(asset_id_list) == 0 or asset_id_list is None or None in asset_id_list:
+        return "asset_id_null"
+    if function in ["average", "minimum", "maximum"]:
+        function_subquery = generate_subquery(
+            DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION, asset_id_list[0], 1
+        )
+        inner_query = (
+            function_subquery.replace("$function", DSS_FUNCTION_MAPPING[function])
+            .replace("$length_from", str(wire_length_from))
+            .replace("$length_to", str(wire_length_to))
+            .replace("$wire", wire)
+        )
+    elif function in ["raw"]:
+        function_subquery = generate_subquery(
+            DSS_TEMPLATE_WITHOUT_CLASS_RAW, asset_id_list[0], 1
+        )
+        inner_query = (
+            function_subquery.replace("$wire", wire)
+            .replace("$length_from", str(wire_length_from))
+            .replace("$length_to", str(wire_length_to))
+        )
+    complete_query = DSS_PREFIX + inner_query
+    return complete_query
