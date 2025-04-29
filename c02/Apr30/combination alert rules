@@ -1,0 +1,11 @@
+
+
+Add support for complex rules in rule engine. complex means more than 1 condition of same or different sensors in a rule. all conditions will be joined by "AND"Rule should be added to rule table along with query. Any combination of existing rules should be supported. Max of 10 conditions in a rule. Average 2 to 4.Create a separate workflow for Rule execution of complex queries. this task will only execute rules as per point #3Schedule this workflow to be triggered starting at x hrs 15/45 mins (15 mins post the data workflows which is at x hrs 0/30 mins).The rule should be executed successfully in the existing rule engine and process anomalies as applicable.
+
+1 - pt1 rule_id-1, group_id - 1, query - "query1"
+2 - fm1 rule_id-1, group_id - 1, query - "query1"
+3 - dss rule_id-1, group_id - 1, query - "query1"
+
+4 - pt1 rule_id-1, group_id - 2, query - "query2"
+5 - fm2 rule_id-1, group_id - 2, query - "query2"
+6 - dss rule_id-1, group_id - 2, query - "query2"
