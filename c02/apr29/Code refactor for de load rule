@@ -1,0 +1,1413 @@
+# Databricks notebook source
+from datetime import datetime
+from delta.tables import DeltaTable
+from pyspark.sql.functions import (
+    input_file_name,
+    split,
+    lit,
+    explode,
+    col,
+    when,
+    concat_ws,
+    lower,
+    trim,
+    udf,
+    array,
+    expr,
+    row_number,
+    desc,
+    substring,
+    concat,
+    regexp_replace,
+    max,
+    explode,
+    collect_list,
+    monotonically_increasing_id,
+    nvl,
+    coalesce,
+    current_timestamp,
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    IntegerType,
+    StringType,
+    ArrayType,
+    DoubleType,
+)
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass  # pragma: no cover
+except NameError:
+    from src.utils.file_metadata_utility import add_epoch_timestamp
+    from src.utils.read_utility import read_json, read_delta_table, read_table
+    from src.utils.write_utility import write_table
+
+# COMMAND ----------
+
+# pt_gauge variables
+PT_TEMPLATE = "(select epoch_timestamp, asset_id from `$catalog`.silver_zone.pt_gauge where $parameter $operator $threshold and asset_id = '$asset_id' and epoch_timestamp between $start_time - $data_frequency and $end_time) condition_$index"
+
+PT_PREFIX = "select min(epoch_timestamp) as start_time, max(epoch_timestamp) as end_time from ( select epoch_timestamp, diff, grp, max(grp) over (order by epoch_timestamp rows between unbounded preceding and current row) group_member from (select epoch_timestamp, diff, case when diff>$data_frequency then sum(diff) OVER (ORDER BY epoch_timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select epoch_timestamp, coalesce((epoch_timestamp - lag(epoch_timestamp) OVER (ORDER BY epoch_timestamp)), 1) as diff from ("
+
+PT_SUFFIX = ") condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max(epoch_timestamp) - min(epoch_timestamp) >= $duration or min(epoch_timestamp) = $start_time - $data_frequency or max(epoch_timestamp) = $end_time"
+
+PT_AVG_TEMPLATE= "WITH base_ptgauge_$asset_index AS (SELECT epoch_timestamp, $parameter  FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = '$asset_id' AND epoch_timestamp BETWEEN $start_time AND $end_time) SELECT a.epoch_timestamp AS timestamp FROM base_ptgauge_$asset_index a JOIN base_ptgauge_$asset_index b  ON b.epoch_timestamp BETWEEN a.epoch_timestamp AND a.epoch_timestamp + ($duration - 1) GROUP BY a.epoch_timestamp HAVING AVG(b.$parameter) $operator $threshold"
+
+FM_TEMPLATE = "(select timestamp, asset_id from `$catalog`.silver_zone.flowmeter where $parameter $operator $threshold and asset_id = '$asset_id' and timestamp between $start_time - $data_frequency and $end_time) condition_$index"
+
+FM_PREFIX = "select min(timestamp) as start_time, max(timestamp) as end_time from ( select timestamp, diff, grp, max(grp) over (order by timestamp rows between unbounded preceding and current row) group_member from (select timestamp, diff, case when diff>$data_frequency then sum(diff) OVER (ORDER BY timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) end grp from (select timestamp, coalesce((timestamp - lag(timestamp) OVER (ORDER BY timestamp)), 1) as diff from ("
+
+FM_SUFFIX = ") condition_group) timestamp_diffs) anomaly_group_step_1) anomaly_group group by group_member having max(timestamp) - min(timestamp) >= $duration or min(timestamp) = $start_time - $data_frequency or max(timestamp) = $end_time"
+
+FLOWMETER_AVG_TEMPLATE =" WITH base_flowmeter_$index AS (SELECT timestamp, $parameter FROM `$catalog`.silver_zone.flowmeter WHERE asset_id = '$asset_id' AND timestamp BETWEEN $start_time AND $end_time) SELECT a.timestamp AS start_time, a.timestamp + ($duration - 1) AS end_time FROM base_flowmeter_$index a JOIN base_flowmeter_$index b ON b.timestamp BETWEEN a.timestamp AND a.timestamp + ($duration - 1) GROUP BY a.timestamp HAVING AVG(b.$parameter) $operator $threshold"
+
+# no_of_events variables
+
+NO_EVENTS_TEMPLATE = "(select ($start_time + $duration*grp) as start_time, ($start_time + $duration*grp + $duration) as end_time from (select floor((epoch_timestamp - $start_time)/$duration) grp, count(*) count from `$catalog`.silver_zone.microseismic_events where asset_id='$asset_id' and epoch_timestamp between $start_time and $end_time and class=$class group by grp having count(1) $operator $threshold) a ) condition_$index"
+
+
+NO_EVENTS_TEMPLATE_WITHOUT_CLASS = "(select ($start_time + $duration*grp) as start_time, ($start_time + $duration*grp + $duration) as end_time from (select floor((epoch_timestamp - $start_time)/$duration) grp, count(*) count from `$catalog`.silver_zone.microseismic_events where asset_id='$asset_id' and epoch_timestamp between $start_time and $end_time group by grp having count(1) $operator $threshold) a ) condition_$index"
+
+
+NO_EVENTS_PREFIX = "select condition_1.start_time, condition_1.end_time from "
+
+
+# magnitude variables
+MAGNITUDE_TEMPLATE = "(select epoch_timestamp from `$catalog`.silver_zone.microseismic_events where asset_id='$asset_id' and class=$class and $parameter $operator $threshold and cast(last_updated_date as bigint) between $start_time and $end_time) condition_$index"
+
+
+MAGNITUDE_TEMPLATE_WITHOUT_CLASS = "(select epoch_timestamp from `$catalog`.silver_zone.microseismic_events where asset_id='$asset_id' and $parameter $operator $threshold and cast(last_updated_date as bigint) between $start_time and $end_time) condition_$index"
+
+MAGNITUDE_PREFIX = "select condition_1.epoch_timestamp start_time from "
+
+
+# dss variables
+
+DSS_TEMPLATE_WITHOUT_CLASS_RAW = "(select DISTINCT(`timestamp`) as `timestamp` from `$catalog`.silver_zone.dss where asset_id='$asset_id' and wire = $wire and depth between $length_from and $length_to and $parameter $operator $threshold and cast(`timestamp` as bigint) between $start_time and $end_time) as condition_$index "
+
+DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION = "(select `timestamp` from `$catalog`.silver_zone.dss where asset_id='$asset_id'and wire = $wire and depth between $length_from and $length_to and cast(`timestamp` as bigint) between $start_time and $end_time group by `timestamp` having $function($parameter) $operator $threshold ) as condition_$index"
+
+DSS_PREFIX = "select condition_1.timestamp as start_time from "
+
+# average function variable with time slide window (running average) for single\multiple assets for ptgauge, flowmeter
+CTE_SLIDING_AVG_TEMPLATE = " WITH base_$table_name AS ( SELECT asset_id, $timestamp_column, $parameter FROM `$catalog`.silver_zone.$table_name WHERE asset_id IN ($asset_id_list) AND $timestamp_column BETWEEN $start_time AND $end_time) SELECT $timestamp_column AS start_time FROM ( $per_asset_queries ) unioned $group_logic "
+
+
+# differential templates
+
+# DSS Baseline Template
+DSS_DIFFERENTIAL_TEMPLATE_BASELINE = """(SELECT depth, $timestamp, $parameter AS baseline_value FROM `$catalog`.silver_zone.dss WHERE asset_id = '$asset_id' AND wire = $wire AND depth BETWEEN $length_from AND $length_to AND timestamp = $baseline_timestamp ) baseline_values"""
+
+# DSS Current Values Template
+DSS_DIFFERENTIAL_TEMPLATE_CURRENT = """(SELECT depth, $timestamp, $parameter AS current_value FROM `$catalog`.silver_zone.dss WHERE asset_id = '$asset_id' AND wire = $wire AND depth BETWEEN $length_from AND $length_to AND timestamp BETWEEN $start_time AND $end_time ) current_values"""
+
+# DSS Differential Template
+DSS_DIFFERENTIAL_TEMPLATE = """(SELECT d.$timestamp, d.depth, ((d.current_value - b.baseline_value) / b.baseline_value) * 100 AS value_difference FROM current_values d JOIN baseline_values b ON d.depth = b.depth) differential"""
+
+# PT Baseline Template
+PT_BASELINE_TEMPLATE = "SELECT $timestamp, asset_id, $parameter AS baseline_value FROM `$catalog`.silver_zone.$table_name WHERE asset_id = '$asset_id' AND $timestamp = $baseline_timestamp "
+
+# PT Current Template
+PT_CURRENT_TEMPLATE = "SELECT $timestamp, asset_id, $parameter AS current_value FROM `$catalog`.silver_zone.$table_name WHERE asset_id = '$asset_id' AND $timestamp BETWEEN $start_time AND $end_time "
+
+# PT Differential Template
+PT_DIFFERENTIAL_TEMPLATE = "SELECT d.$timestamp,$diff_formula AS value_difference FROM current_values d JOIN baseline_values b ON d.asset_id = b.asset_id "
+
+
+# DSS Differential Prefix Template
+DIFFERENTIAL_PREFIX = """WITH baseline_values AS $baseline_template, current_values AS $current_template, differential AS $differential_template SELECT DISTINCT $timestamp as start_time FROM differential WHERE value_difference $operator $threshold"""
+
+
+# COMMAND ----------
+
+DSS_PARAMETER_MAPPING = {
+    "axial_strain": "axial_strain_thermal",
+    "bend_magnitude": "bend_mag",
+    "dts": "curr_temp",
+}
+DSS_FUNCTION_MAPPING = {
+    "average" : "avg",
+    "maximum" : "max",
+    "minimum" : "min",
+}
+
+# COMMAND ----------
+
+def generate_subquery(
+    template: str, asset_id: str, index: int, data_frequency: str = None
+) -> str:
+    """Generates a subquery by replacing placeholders in the template."""
+    query = template.replace("$asset_id", str(asset_id)).replace("$index", str(index))
+    if data_frequency is not None:
+        query = query.replace("$data_frequency", str(data_frequency))
+    return query
+
+# COMMAND ----------
+
+def generate_differential_query(
+   table_name: str,
+   baseline_template: str,
+   current_template: str,
+   differential_template: str,
+   parameter: str,
+   timestamp_column: str,
+   asset_id_list: list[str],
+   operator: str,
+   threshold: float,
+   join_condition: str,
+   baseline_timestamp: int,
+   duration: int,
+   threshold_unit: str
+) -> str:
+   """
+   Generates a differential sliding window SQL query.
+   """
+   try:
+       cte_blocks = []
+       anomaly_blocks = []
+
+       for asset_id in asset_id_list:
+           safe_suffix = asset_id.lower().replace("-", "_")
+           # Replace fields inside templates
+           baseline_select = baseline_template \
+               .replace("$parameter", parameter) \
+               .replace("$timestamp", timestamp_column) \
+               .replace("$asset_id", asset_id) \
+               .replace("$baseline_timestamp", str(baseline_timestamp)) \
+               .replace("$table_name", table_name)
+           current_select = current_template \
+               .replace("$parameter", parameter) \
+               .replace("$timestamp", timestamp_column) \
+               .replace("$asset_id", asset_id) \
+               .replace("$table_name", table_name)
+           if threshold_unit == "%":
+               diff_formula = "ABS((d.current_value - b.baseline_value) / b.baseline_value) * 100"
+           else:
+               diff_formula = "(d.current_value - b.baseline_value)"
+
+           differential_select = differential_template \
+               .replace("$timestamp", timestamp_column) \
+               .replace("$diff_formula", diff_formula) \
+               .replace("current_values", f"current_{safe_suffix}") \
+               .replace("baseline_values", f"baseline_{safe_suffix}")
+           # Build final CTE blocks (CTE_NAME AS (SELECT ...))
+           baseline_cte = f"baseline_{safe_suffix} AS ({baseline_select})"
+           current_cte = f"current_{safe_suffix} AS ({current_select})"
+           diff_cte = f"differential_{safe_suffix} AS ({differential_select})"
+           cte_blocks.extend([baseline_cte, current_cte, diff_cte])
+           # Each anomaly block
+           anomaly_block = f"SELECT d.{timestamp_column} AS start_time, d.{timestamp_column} + ({duration} - 1) AS end_time FROM differential_{safe_suffix} d WHERE d.value_difference {operator} {threshold}"
+           anomaly_blocks.append(anomaly_block.strip())
+       # Build WITH clause with ", " separator
+       with_clause = "WITH " + ", ".join(cte_blocks)
+       # Build final_anomalies CTE
+       if join_condition.lower() == "and":
+           final_join = anomaly_blocks[0]
+           for idx in range(1, len(anomaly_blocks)):
+               final_join = f"SELECT t1.start_time, t1.end_time FROM ({final_join}) t1 INNER JOIN ({anomaly_blocks[idx]}) t{idx+1} ON t1.start_time <= t{idx+1}.end_time AND t{idx+1}.start_time <= t1.end_time"
+       elif join_condition.lower() == "or":
+           final_join = " UNION ALL ".join(anomaly_blocks)
+       else:
+           raise ValueError(f"Unsupported join_condition: {join_condition}")
+       # Assemble final query
+       full_query = f"{with_clause}, final_anomalies AS ({final_join}) SELECT DISTINCT start_time, end_time FROM final_anomalies"
+       return full_query.strip()
+   except Exception as e:
+       return f"-- Error generating differential query: {str(e)}"
+
+# COMMAND ----------
+
+generate_differential_query(
+   table_name="flowmeter",
+   baseline_template=PT_BASELINE_TEMPLATE,
+   current_template=PT_CURRENT_TEMPLATE,
+   differential_template=PT_DIFFERENTIAL_TEMPLATE,
+   parameter="surface_flow_rate",
+   timestamp_column="timestamp",
+   asset_id_list=["FLM_002"],
+   operator=">",
+   threshold=50.0,
+   join_condition="and",
+   baseline_timestamp=1714008000,
+     duration = 10,
+     threshold_unit="%"
+)
+
+# COMMAND ----------
+
+generate_differential_query(
+   table_name="pt_gauge",
+   baseline_template=PT_BASELINE_TEMPLATE,
+   current_template=PT_CURRENT_TEMPLATE,
+   differential_template=PT_DIFFERENTIAL_TEMPLATE,
+   parameter="pressure",
+   timestamp_column="epoch_timestamp",
+   asset_id_list=["PTG_001","PTG_002"],
+   operator=">",
+   threshold=50.0,
+   join_condition="and",
+   baseline_timestamp=1714008000,
+   duration = 10,
+   threshold_unit="%"
+)
+
+# COMMAND ----------
+
+def handle_flow_meter(
+   asset_id_list: list[str],
+   data_frequency_list: list[str],
+   function: str = "raw",
+   duration: int = 0,
+   join_condition: str = "and",
+   parameter: str = "$parameter",
+   operator: str = ">",
+   threshold: float = 0.0,
+   baseline_timestamp: int = 0,
+   threshold_unit: str = "%"
+) -> str:
+   """
+   Handles raw, average, and differential query generation for flowmeter sensors.
+   """
+
+   if not asset_id_list or len(asset_id_list) != len(data_frequency_list):
+       return "asset_id_null"
+   if function == "raw":
+       # ========== RAW LOGIC ========== #
+       template = FLOWMETER_TEMPLATE
+       if len(asset_id_list) == 1:
+           query = template \
+               .replace("$asset_id", asset_id_list[0]) \
+               .replace("$parameter", parameter) \
+               .replace("$operator", operator) \
+               .replace("$threshold", str(threshold)) \
+               .replace("$data_frequency", str(data_frequency_list[0])) \
+               .replace("$duration", str(duration)) \
+               .replace("$start_time", "$start_time") \
+               .replace("$end_time", "$end_time") \
+               .replace("$index", "1")
+
+           return FLOWMETER_PREFIX + query + FLOWMETER_SUFFIX
+       else:
+           per_asset_queries = []
+           for i, asset_id in enumerate(asset_id_list):
+               per_asset_query = template \
+                   .replace("$asset_id", asset_id) \
+                   .replace("$parameter", parameter) \
+                   .replace("$operator", operator) \
+                   .replace("$threshold", str(threshold)) \
+                   .replace("$data_frequency", str(data_frequency_list[i])) \
+                   .replace("$duration", str(duration)) \
+                   .replace("$start_time", "$start_time") \
+                   .replace("$end_time", "$end_time") \
+                   .replace("$index", str(i+1))
+               per_asset_queries.append(per_asset_query)
+           if join_condition.lower() == "and":
+               stitched_query = per_asset_queries[0]
+               for idx in range(1, len(per_asset_queries)):
+                   stitched_query += f" inner join {per_asset_queries[idx]} on condition_1.timestamp = condition_{idx+1}.timestamp"
+               return FLOWMETER_PREFIX + stitched_query + FLOWMETER_SUFFIX
+           elif join_condition.lower() == "or":
+               unioned_query = " union all ".join(per_asset_queries)
+               return FLOWMETER_PREFIX + unioned_query + FLOWMETER_SUFFIX
+           else:
+               raise ValueError(f"Unsupported join_condition: {join_condition}")
+   elif function == "average":
+       # ========== AVERAGE LOGIC ========== #
+       template = FLOWMETER_AVG_TEMPLATE
+       if len(asset_id_list) == 1:
+           query = template \
+               .replace("$asset_id", asset_id_list[0]) \
+               .replace("$parameter", parameter) \
+               .replace("$operator", operator) \
+               .replace("$threshold", str(threshold)) \
+               .replace("$duration", str(duration)) \
+               .replace("$start_time", "$start_time") \
+               .replace("$end_time", "$end_time") \
+               .replace("$index", "1")
+           return query
+       else:
+           with_blocks = []
+           sliding_selects = []
+           for i, asset_id in enumerate(asset_id_list):
+               base_cte = f" base_flowmeter_{i+1} AS (SELECT timestamp, {parameter} FROM `$catalog`.silver_zone.flowmeter WHERE asset_id = '{asset_id}' AND timestamp BETWEEN $start_time AND $end_time)"
+
+
+               sliding_query = f"SELECT a.timestamp AS start_time, a.timestamp + ({duration} - 1) AS end_time FROM base_flowmeter_{i+1} a JOIN base_flowmeter_{i+1} b ON b.timestamp BETWEEN a.timestamp AND a.timestamp + ({duration} - 1) GROUP BY a.timestamp HAVING AVG(b.{parameter}) {operator} {threshold}"
+
+               with_blocks.append(base_cte.strip())
+               sliding_selects.append(f"({sliding_query.strip()}) t{i+1}")
+           with_clause = "WITH " + ", ".join(with_blocks)
+           if join_condition.lower() == "and":
+               stitched_query = sliding_selects[0]
+               for idx in range(1, len(sliding_selects)):
+                   stitched_query += f" INNER JOIN {sliding_selects[idx]} ON t1.start_time <= t{idx+1}.end_time AND t{idx+1}.start_time <= t1.end_time"
+           elif join_condition.lower() == "or":
+               stitched_query = " UNION ALL ".join(sliding_selects)
+           else:
+               raise ValueError(f"Unsupported join_condition: {join_condition}")
+           final_query = f"{with_clause} {stitched_query} "
+
+           return final_query.strip()
+       
+   elif function == "differential":
+       # ========== DIFFERENTIAL LOGIC ========== #
+       return generate_differential_query(
+           table_name="flowmeter",
+           baseline_template=PT_BASELINE_TEMPLATE,   # You will have FLOWMETER_BASELINE_TEMPLATE separately ideally
+           current_template=PT_CURRENT_TEMPLATE,
+           differential_template=PT_DIFFERENTIAL_TEMPLATE,
+           parameter=parameter,
+           timestamp_column="timestamp",
+           asset_id_list=asset_id_list,
+           operator=operator,
+           threshold=threshold,
+           join_condition=join_condition,
+           baseline_timestamp=baseline_timestamp,
+           duration=duration,
+           threshold_unit=threshold_unit
+       )
+   else:
+       return "-- Unsupported function for handle_flow_meter"
+
+# COMMAND ----------
+
+handle_flow_meter(
+   asset_id_list=["FLM_002"],
+   data_frequency_list=[5],
+   function="differential",
+   duration=10,
+   join_condition="AND",
+   parameter="surface_flow_rate",
+   operator= ">",
+   threshold= 100.0,
+   baseline_timestamp= 0,
+    threshold_unit="psu"
+)
+
+# COMMAND ----------
+
+handle_flow_meter(
+   asset_id_list=["FLM_002","FLM_001"],
+   data_frequency_list=[5,10],
+   function="differential",
+   duration=10,
+   join_condition="and",
+   parameter="surface_flow_rate",
+   operator= ">",
+   threshold= 20.0,
+   baseline_timestamp= 1679729460,
+    threshold_unit='PSU'
+)
+
+# COMMAND ----------
+
+def handle_pressure_temperature(
+   asset_id_list: list[str],
+   data_frequency_list: list[str],
+   function: str = "raw",
+   duration: int = 0,
+   join_condition: str = "and",
+   parameter: str = "$parameter",
+   operator: str = ">",
+   threshold: float = 0.0,
+   baseline_timestamp: int = 0,
+    threshold_unit: str = "%"
+) -> str:
+   """
+   Handles raw and average query generation for pressure and temperature sensors (pt_gauge).
+   """
+   if not asset_id_list or len(asset_id_list) != len(data_frequency_list):
+       return "asset_id_null"
+   if function == "raw":
+       # ========== RAW LOGIC ========== #
+       template = PT_TEMPLATE
+       if len(asset_id_list) == 1:
+           query = template \
+               .replace("$asset_id", asset_id_list[0]) \
+               .replace("$parameter", parameter) \
+               .replace("$operator", operator) \
+               .replace("$threshold", str(threshold)) \
+               .replace("$data_frequency", str(data_frequency_list[0])) \
+               .replace("$duration", str(duration)) \
+               .replace("$start_time", "$start_time") \
+               .replace("$end_time", "$end_time") \
+               .replace("$index", "1")
+           return PT_PREFIX + query + PT_SUFFIX
+       else:
+           per_asset_queries = []
+           for i, asset_id in enumerate(asset_id_list):
+               per_asset_query = template \
+                   .replace("$asset_id", asset_id) \
+                   .replace("$parameter", parameter) \
+                   .replace("$operator", operator) \
+                   .replace("$threshold", str(threshold)) \
+                   .replace("$data_frequency", str(data_frequency_list[i])) \
+                   .replace("$duration", str(duration)) \
+                   .replace("$start_time", "$start_time") \
+                   .replace("$end_time", "$end_time") \
+                   .replace("$index", str(i+1))
+               per_asset_queries.append(per_asset_query)
+           if join_condition.lower() == "and":
+               stitched_query = per_asset_queries[0]
+               for idx in range(1, len(per_asset_queries)):
+                   stitched_query += f" inner join {per_asset_queries[idx]} on condition_1.timestamp = condition_{idx+1}.timestamp"
+               return PT_PREFIX + stitched_query + PT_SUFFIX
+           elif join_condition.lower() == "or":
+               unioned_query = " union all ".join(per_asset_queries)
+               return PT_PREFIX + unioned_query + PT_SUFFIX
+           else:
+               raise ValueError(f"Unsupported join_condition: {join_condition}")
+   elif function == "average":
+       # ========== AVERAGE LOGIC (corrected for overlapping multi asset) ========== #
+       template = PT_AVG_TEMPLATE
+       if len(asset_id_list) == 1:
+           #  Single asset average — as is
+           query = template \
+               .replace("$asset_id", asset_id_list[0]) \
+               .replace("$parameter", parameter) \
+               .replace("$operator", operator) \
+               .replace("$threshold", str(threshold)) \
+               .replace("$duration", str(duration)) \
+               .replace("$start_time", "$start_time") \
+               .replace("$end_time", "$end_time") \
+               .replace("$index", "1")
+           return query
+       else:
+           #  Multi asset average with window overlap
+           with_blocks = []
+           sliding_selects = []
+           for i, asset_id in enumerate(asset_id_list):
+               base_cte = f" base_ptgauge_{i+1} AS (SELECT epoch_timestamp, {parameter} FROM `$catalog`.silver_zone.pt_gauge WHERE asset_id = '{asset_id}' AND epoch_timestamp BETWEEN $start_time AND $end_time)"
+
+               sliding_query = f"SELECT a.epoch_timestamp AS start_time,a.epoch_timestamp + ({duration} - 1) AS end_time FROM base_ptgauge_{i+1} a JOIN base_ptgauge_{i+1} b ON b.epoch_timestamp BETWEEN a.epoch_timestamp AND a.epoch_timestamp + ({duration} - 1) GROUP BY a.epoch_timestamp HAVING AVG(b.{parameter}) {operator} {threshold}"
+               
+               with_blocks.append(base_cte.strip())
+               sliding_selects.append(f"({sliding_query.strip()}) t{i+1}")
+           # Final WITH clause
+           with_clause = "WITH " + ", ".join(with_blocks)
+           if join_condition.lower() == "and":
+               # Inner join based on overlapping window
+               stitched_query = sliding_selects[0]
+               for idx in range(1, len(sliding_selects)):
+                   stitched_query += f" INNER JOIN {sliding_selects[idx]} ON t1.start_time <= t{idx+1}.end_time AND t{idx+1}.start_time <= t1.end_time"
+           elif join_condition.lower() == "or":
+               # Union all (no special overlapping needed)
+               stitched_query = " UNION ALL ".join(sliding_selects)
+           else:
+               raise ValueError(f"Unsupported join_condition: {join_condition}")
+           final_query = f"{with_clause} {stitched_query}"
+           
+           return final_query.strip()
+   elif function == "differential":
+       # ========== DIFFERENTIAL LOGIC ========== #
+       return generate_differential_query(
+           table_name="pt_gauge",
+           baseline_template=PT_BASELINE_TEMPLATE,
+           current_template=PT_CURRENT_TEMPLATE,
+           differential_template=PT_DIFFERENTIAL_TEMPLATE,
+           parameter=parameter,
+           timestamp_column="epoch_timestamp",
+           asset_id_list=asset_id_list,
+           operator=operator,
+           threshold=threshold,
+           join_condition=join_condition,
+           baseline_timestamp=baseline_timestamp,
+           duration=duration,
+           threshold_unit=threshold_unit
+       )
+   else:
+       return "-- Unsupported function for handle_pressure_temperature"
+
+# COMMAND ----------
+
+handle_pressure_temperature(
+   asset_id_list=["PTG_001","PY_002"],
+      data_frequency_list=[60,10],
+   function="average",
+   duration=10,
+   join_condition="and",
+   parameter="pressure",
+   operator=">",
+   threshold=50.0
+)
+
+# COMMAND ----------
+
+handle_pressure_temperature(
+   asset_id_list=["FM_001","FM_002"],
+   data_frequency_list=[2,5],
+   function="average",
+   duration=10,
+   join_condition="and",
+   parameter="pressure",
+   operator= ">",
+   threshold= 5000.0,
+   baseline_timestamp= 1714008000
+)
+
+# COMMAND ----------
+
+handle_pressure_temperature(
+   asset_id_list=["FM_001","FM_002"],
+   data_frequency_list=[2,5],
+   function="differential",
+   duration=10,
+   join_condition="and",
+   parameter="temperature",
+   operator= ">",
+   threshold= 5000.0,
+   baseline_timestamp= 1714008000,
+   threshold_unit='t'
+)
+
+# COMMAND ----------
+
+handle_pressure_temperature(
+   asset_id_list=["FM_001"],
+   data_frequency_list=[2],
+   function="differential",
+   duration=10,
+   join_condition="and",
+   parameter="temperature",
+   operator= ">",
+   threshold= 5000.0,
+   baseline_timestamp= 0,
+   threshold_unit='t'
+)
+
+# COMMAND ----------
+
+def handle_no_of_events(
+    asset_id_list: list[str],
+    clss: int = None,
+    function: str = None,
+    duration: int = 0,
+    join_condition: str = "and",
+    operator: str = ">",
+    threshold: float = 50.0,
+    baseline_timestamp: int = 0
+) -> str:
+
+    if clss is not None:
+        if function == "differential":
+            return generate_differential_query(
+                table_name="microseismic_events",
+                baseline_template=PT_BASELINE_TEMPLATE,
+                current_template=PT_CURRENT_TEMPLATE,
+                differential_template=PT_DIFFERENTIAL_TEMPLATE,
+                parameter="no_of_events",
+                timestamp_column="epoch_timestamp",
+                asset_id_list=asset_id_list,
+                operator=operator,
+                threshold=threshold,
+                join_condition=join_condition,
+                baseline_timestamp=baseline_timestamp
+            )
+        first_subquery = generate_subquery(NO_EVENTS_TEMPLATE, asset_id_list[0], 1)
+        join_template = " on condition_1.grp = condition_$index2.grp"
+        subqueries = [
+            f" inner join {generate_subquery(NO_EVENTS_TEMPLATE, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+            for i, asset_id in enumerate(asset_id_list[1:])
+        ]
+    else:
+        if function == "differential":
+            return generate_differential_query(
+                table_name="microseismic_events",
+                baseline_template=PT_BASELINE_TEMPLATE,
+                current_template=PT_CURRENT_TEMPLATE,
+                differential_template=PT_DIFFERENTIAL_TEMPLATE,
+                parameter="no_of_events",
+                timestamp_column="epoch_timestamp",
+                asset_id_list=asset_id_list,
+                operator=operator,
+                threshold=threshold,
+                join_condition=join_condition,
+                baseline_timestamp=baseline_timestamp
+            )
+        first_subquery = generate_subquery(NO_EVENTS_TEMPLATE_WITHOUT_CLASS, asset_id_list[0], 1)
+        join_template = " on condition_1.grp = condition_$index2.grp"
+        subqueries = [
+            f" inner join {generate_subquery(NO_EVENTS_TEMPLATE_WITHOUT_CLASS, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+            for i, asset_id in enumerate(asset_id_list[1:])
+        ]
+    subquery = first_subquery + " ".join(subqueries)
+    return NO_EVENTS_PREFIX + subquery
+
+# COMMAND ----------
+
+def handle_magnitude(
+   asset_id_list: list[str],
+   clss: int = None,
+   function: str = None,
+   duration: int = 0,
+   join_condition: str = "and",
+   operator: str = ">",
+   threshold: float = 50.0,
+   baseline_timestamp: int = 0
+) -> str:
+
+   if clss is not None:
+       if function == "differential":
+           return generate_differential_query(
+               table_name="microseismic_events",
+               baseline_template=PT_BASELINE_TEMPLATE,
+               current_template=PT_CURRENT_TEMPLATE,
+               differential_template=PT_DIFFERENTIAL_TEMPLATE,
+               parameter="magnitude",
+               timestamp_column="epoch_timestamp",
+               asset_id_list=asset_id_list,
+               operator=operator,
+               threshold=threshold,
+               join_condition=join_condition,
+               baseline_timestamp=baseline_timestamp
+           )
+       first_subquery = generate_subquery(MAGNITUDE_TEMPLATE, asset_id_list[0], 1)
+       join_template = " on condition_1.epoch_timestamp = condition_$index2.epoch_timestamp"
+       subqueries = [
+           f" inner join {generate_subquery(MAGNITUDE_TEMPLATE, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+           for i, asset_id in enumerate(asset_id_list[1:])
+       ]
+   else:
+       if function == "differential":
+           return generate_differential_query(
+               table_name="microseismic_events",
+               baseline_template=PT_BASELINE_TEMPLATE,
+               current_template=PT_CURRENT_TEMPLATE,
+               differential_template=PT_DIFFERENTIAL_TEMPLATE,
+               parameter="magnitude",
+               timestamp_column="epoch_timestamp",
+               asset_id_list=asset_id_list,
+               operator=operator,
+               threshold=threshold,
+               join_condition=join_condition,
+               baseline_timestamp=baseline_timestamp
+           )
+       first_subquery = generate_subquery(MAGNITUDE_TEMPLATE_WITHOUT_CLASS, asset_id_list[0], 1)
+       join_template = " on condition_1.epoch_timestamp = condition_$index2.epoch_timestamp"
+       subqueries = [
+           f" inner join {generate_subquery(MAGNITUDE_TEMPLATE_WITHOUT_CLASS, asset_id, i+2)}{join_template.replace('$index2', str(i+2))}"
+           for i, asset_id in enumerate(asset_id_list[1:])
+       ]
+   subquery = first_subquery + " ".join(subqueries)
+   return MAGNITUDE_PREFIX + subquery
+
+# COMMAND ----------
+
+def handle_dss(
+   asset_id_list: list[str],
+   data_frequency_list: list[str],
+   function: str,
+   wire: str,
+   wire_length_from: int,
+   wire_length_to: int,
+   duration: int = 0,
+   join_condition: str = "and",
+   parameter: str = "$parameter",
+   operator: str = ">",
+   threshold: float = 50.0,
+   baseline_timestamp: int = 0,
+   threshold_unit: str = "%"
+) -> str:
+   """Handles query generation for DSS rules: raw, average, differential."""
+   if not asset_id_list or len(asset_id_list) != len(data_frequency_list):
+       return "asset_id_null"
+   
+   # Average, min, max using pre-aggregated subquery
+   if function in ["average", "minimum", "maximum"]:
+       first_subquery = generate_subquery(DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION, asset_id_list[0], 1)
+       join_template = " on condition_1.epoch_timestamp = condition_$index2.epoch_timestamp"
+       subqueries = [
+           f" inner join {generate_subquery(DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION, aid, i+2)}{join_template.replace('$index2', str(i+2))}"
+           for i, aid in enumerate(asset_id_list[1:])
+       ]
+       full_query = first_subquery + " ".join(subqueries)
+       return DSS_PREFIX + full_query \
+           .replace("$function", DSS_FUNCTION_MAPPING[function]) \
+           .replace("$wire", wire) \
+           .replace("$length_from", str(wire_length_from)) \
+           .replace("$length_to", str(wire_length_to))
+   # Differential logic using architect-preferred WITH clause
+   elif function == "differential":
+       return generate_differential_query(
+           table_name="dss",
+           baseline_template=DSS_DIFFERENTIAL_TEMPLATE_BASELINE,
+           current_template=DSS_DIFFERENTIAL_TEMPLATE_CURRENT,
+           differential_template=DSS_DIFFERENTIAL_TEMPLATE,
+           parameter=parameter,
+           timestamp_column="timestamp",
+           asset_id_list=asset_id_list,
+           operator=operator,
+           threshold=threshold,
+           join_condition=join_condition,
+           baseline_timestamp=baseline_timestamp,
+           threshold_unit=threshold_unit
+       ) \
+       .replace("$wire", wire) \
+       .replace("$length_from", str(wire_length_from)) \
+       .replace("$length_to", str(wire_length_to))
+   # Raw logic
+   elif function == "raw":
+       first_subquery = generate_subquery(DSS_TEMPLATE_WITHOUT_CLASS_RAW, asset_id_list[0], 1)
+       join_template = " on condition_1.epoch_timestamp = condition_$index2.epoch_timestamp"
+       subqueries = [
+           f" inner join {generate_subquery(DSS_TEMPLATE_WITHOUT_CLASS_RAW, aid, i+2)}{join_template.replace('$index2', str(i+2))}"
+           for i, aid in enumerate(asset_id_list[1:])
+       ]
+       full_query = first_subquery + " ".join(subqueries)
+       return DSS_PREFIX + full_query \
+           .replace("$wire", wire) \
+           .replace("$length_from", str(wire_length_from)) \
+           .replace("$length_to", str(wire_length_to))
+   else:
+       return f"-- Unsupported function: {function}"
+
+# COMMAND ----------
+
+generate_query_udf.func(
+   asset_id_list=["DSS_001"],
+   parameter="bend_magnitude",
+   clss=None,
+   data_frequency_list=["2"],
+   function="differential",
+   wire="W2",
+   wire_length_from=500,
+   wire_length_to=1500,
+   duration=10,
+   join_condition="and",
+   operator=">=",
+   threshold=10.0,
+   baseline_time=1714008000
+)
+
+# COMMAND ----------
+
+@udf(returnType=StringType())
+
+def generate_query_udf(
+    asset_id_list: list[str],
+    parameter: str,
+    clss: int,
+    data_frequency_list: list[str],
+    function: str,
+    wire: str,
+    wire_length_from: int,
+    wire_length_to: int,
+    duration: int,
+    join_condition: str,
+    operator: str,
+    threshold: float,
+    baseline_time: int
+) -> str:
+    try:
+        if parameter in ["pressure", "temperature"]:
+            return handle_pressure_temperature(
+                asset_id_list=asset_id_list,
+                data_frequency_list=data_frequency_list,
+                function=function,
+                duration=duration,
+                join_condition=join_condition,
+                parameter=parameter,
+                operator=operator,
+                threshold=threshold,
+                baseline_timestamp=baseline_time
+            )
+        elif parameter in ["surface_flow_rate", "well_head_pressure"]:
+            return handle_flow_meter(
+                asset_id_list=asset_id_list,
+                data_frequency_list=data_frequency_list,
+                function=function,
+                duration=duration,
+                join_condition=join_condition,
+                parameter=parameter,
+                operator=operator,
+                threshold=threshold,
+                baseline_timestamp=baseline_time
+            )
+        elif parameter in ["dts", "axial_strain", "bend_magnitude"]:
+            return handle_dss(
+                asset_id_list=asset_id_list,
+                data_frequency_list=data_frequency_list,
+                function=function,
+                wire=wire,
+                wire_length_from=wire_length_from,
+                wire_length_to=wire_length_to,
+                duration=duration,
+                join_condition=join_condition,
+                parameter=parameter,
+                operator=operator,
+                threshold=threshold,
+                baseline_timestamp=baseline_time
+            )
+        elif parameter == "magnitude":
+            return handle_magnitude(
+                asset_id_list=asset_id_list,
+                clss=clss,
+                function=function,
+                duration=duration,
+                join_condition=join_condition,
+                operator=operator,
+                threshold=threshold,
+                baseline_timestamp=baseline_time
+            )
+        elif parameter == "no_of_events":
+            return handle_no_of_events(
+                asset_id_list=asset_id_list,
+                clss=clss,
+                function=function,
+                duration=duration,
+                join_condition=join_condition,
+                operator=operator,
+                threshold=threshold,
+                baseline_timestamp=baseline_time
+            )
+        else:
+            raise ValueError(f"Unsupported parameter: {parameter}")
+    except Exception as e:
+        return f"-- Error generating query: {str(e)}"
+
+# COMMAND ----------
+
+generate_query_udf.func(
+   asset_id_list=["PTG_001", "PTG_002"],
+   parameter="pressure",
+   clss=None,
+   data_frequency_list=["high", "high"],
+   function="differential",
+   wire="",  # not used
+   wire_length_from=0,
+   wire_length_to=0,
+   duration=10,
+   join_condition="and",
+   operator=">",
+   threshold=60.0,
+   baseline_timestamp=0 )
+
+# COMMAND ----------
+
+def get_rules_df(spark, logger, source_file_list):
+    
+    # This function reads the data from the json file list and returns a dataframe.
+    
+    try:
+        logger.info(f"Reading the source files : {source_file_list}")
+        conditions_schema = StructType(
+            [
+                StructField("condition_id", IntegerType(), True),
+                StructField("condition_name", StringType(), True),
+                StructField("asset_id", ArrayType(StringType()), True),
+                StructField("join_condition", StringType(), True),
+                StructField("parameter", StringType(), True),
+                StructField("operator", StringType(), True),
+                StructField("class", IntegerType(), True),
+                StructField("threshold", DoubleType(), True),
+                StructField("duration", IntegerType(), True),
+                StructField("wire", StringType(), True),
+                StructField("function", StringType(), True),
+                StructField("wire_length_from", IntegerType(), True),
+                StructField("wire_length_to", IntegerType(), True),
+                StructField("rule_run_frequency", IntegerType(), True),
+                StructField("sensor_type", StringType(), True),
+                StructField("severity", StringType(), True),
+                StructField("risk_register_controls", ArrayType(IntegerType()), True),
+                StructField("baseline_time", IntegerType(), True),
+                StructField("threshold_unit", StringType(), True),
+            ]
+        )
+
+        schema = StructType(
+            [
+                StructField("rule_id", IntegerType()),
+                StructField("rule_name", StringType(), True),
+                StructField("tenant_id", StringType(), True),
+                StructField("conditions", ArrayType(conditions_schema), True),
+                StructField("operation", StringType(), True),
+            ]
+        )
+
+        rules_df = read_json(spark, logger, source_file_list, schema).withColumn(
+            "input_file", input_file_name()
+        )
+
+        return rules_df
+
+    except Exception as e:
+        logger.error(f"Error in get_rules_df() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def keep_latest_rules(logger, rules_df):
+    # This function keeps only latest record for each rule id based on epoch timestamp extracted from file name.
+    
+    try:
+        rules_df = add_epoch_timestamp(logger, rules_df)
+        window_spec = Window.partitionBy("rule_id").orderBy(desc("epoch_timestamp"))
+
+        rules_df = (
+            rules_df.withColumn("row_num", row_number().over(window_spec))
+            .where(col("row_num") == 1)
+            .drop("row_num", "epoch_timestamp")
+        )
+
+        return rules_df
+
+    except Exception as e:
+        logger.error(f"Error in keep_latest_rules() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def delete_rules(spark, logger, rules_df, bronze_table_name):
+    
+    # This function deletes the rules from the rules bronze table for records with operation as delete.
+    
+    try:
+        rules_delete_df = rules_df.filter(
+            lower(trim(col("operation"))) == "delete"
+        ).distinct()
+
+        if rules_delete_df.count() > 0:
+            logger.info("Found rules to Delete. Deleting the rules from delta table...")
+            rules_dt = read_delta_table(spark, logger, bronze_table_name)
+
+            (
+                rules_dt.alias("target")
+                .merge(
+                    rules_delete_df.alias("source"), "target.rule_id = source.rule_id"
+                )
+                .whenMatchedDelete()
+                .execute()
+            )
+
+        else:
+            logger.info("No rules to delete...")
+
+    except Exception as e:
+        logger.error(f"Error in delete_rules() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def apply_join_condition(logger, rules_df):
+    
+    # This function applies the 'and' and 'or' join condition on the rules with operation as create/update and returns the resulting dataframe.
+    
+    try:
+        logger.info(f"Extracting the create/update rules...")
+        create_update_rules_df = rules_df.filter(
+            col("operation") != "delete"
+        ).distinct()
+
+        logger.info("Exploding conditions column and extracting values...")
+        create_update_rules_df = (
+            create_update_rules_df.withColumn("conditions", explode(col("conditions")))
+            .withColumn("condition_id", col("conditions")["condition_id"])
+            .withColumn("condition_name", col("conditions")["condition_name"])
+            .withColumn("asset_id", col("conditions")["asset_id"])
+            .withColumn("join_condition", col("conditions")["join_condition"])
+            .withColumn("parameter", col("conditions")["parameter"])
+            .withColumn("operator", col("conditions")["operator"])
+            .withColumn("class", col("conditions")["class"])
+            .withColumn("threshold", col("conditions")["threshold"])
+            .withColumn("duration", col("conditions")["duration"])
+            .withColumn("wire", col("conditions")["wire"])
+            .withColumn("function", col("conditions")["function"])
+            .withColumn("wire_length_from", col("conditions")["wire_length_from"])
+            .withColumn("wire_length_to", col("conditions")["wire_length_to"])
+            .withColumn("rule_run_frequency", col("conditions")["rule_run_frequency"])
+            .withColumn("sensor_type", col("conditions")["sensor_type"])
+            .withColumn("severity", col("conditions")["severity"])
+            .withColumn(
+                "risk_register_controls", col("conditions")["risk_register_controls"]
+            )
+            .withColumn("baseline_time", col("conditions")["baseline_time"])
+            .withColumn("threshold_unit", col("conditions")["threshold_unit"])"
+            .withColumn("query", lit("query"))
+            .withColumn("last_updated_date", lit(datetime.now()))
+            .drop(col("conditions"))
+        )
+        if create_update_rules_df.filter(col("join_condition") != "").count() > 0:
+            logger.info("Exploding asset_id column for join condition as 'or'...")
+            create_update_rules_or_df = create_update_rules_df.filter(
+                (lower(trim(col("join_condition"))) == "or")
+            ).withColumn("asset_id", explode(col("asset_id")))
+            logger.info("Concatenating asset_id column for join condition as 'and'...")
+            create_update_rules_and_df = create_update_rules_df.filter(
+                (lower(trim(col("join_condition"))) == "and")
+            ).withColumn("asset_id", concat_ws(",", col("asset_id")))
+            rules_df = create_update_rules_and_df.union(create_update_rules_or_df)
+
+            logger.info(
+                "Generating asset_id column as an array of string from string..."
+            )
+        else:
+            logger.info("Generating df for non null join condition...")
+            rules_df = create_update_rules_df.withColumn(
+                "asset_id", concat_ws(",", col("asset_id"))
+            )
+
+        return rules_df.withColumn("asset_id", split("asset_id", ","))
+
+    except Exception as e:
+        logger.error(f"Error in apply_join_condition() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def get_rules_to_upsert(logger, rules_df, rules_dt):
+    
+    # This function returns a dataframe containing rules that needs to be created/inserted and updated.
+    # Note : It only retains rules with create operation which are not present in the rules bronze table.
+    
+    try:
+        rules_dt_df = rules_dt.toDF()
+
+        logger.info(
+            "Filtering rules where operation is 'create' and rule_id is not present in bronze table..."
+        )
+
+        create_src = rules_df.filter(lower(trim(col("operation"))) == "create")
+
+        # A left_anti join returns all rows from the left DataFrame create_src that do not have a match in the right DataFrame rules_dt_df. In this case, it returns all rules in create_src whose rule_id does not exist in rules_dt_df.
+        rules_create_df = create_src.join(
+            rules_dt_df, create_src.rule_id == rules_dt_df.rule_id, how="left_anti"
+        )
+        logger.info("Filtering rules where operation is 'update'...")
+
+        rules_update_df = rules_df.filter(lower(trim(col("operation"))) == "update")
+
+        return rules_create_df.union(rules_update_df)
+
+    except Exception as e:
+        logger.error(f"Error in get_rules_to_upsert() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def add_data_frequency(logger, rules_df, asset_df):
+    
+    # This function adds data frequnecy column from asset bronze table in the rules dataframe.
+    
+    try:
+        logger.info("Fetching asset_id and data_frequency from asset bronze table...")
+        asset_df = asset_df.select(col("asset_id"), col("data_frequency")).withColumn(
+            "data_frequency", 2 * col("data_frequency") - 1
+        )
+
+        # Add a unique id to each row in rules_df. This is being used instead of using business key (asset_id, rule_id, condition_id) because for 'Or' it is exploded before
+
+        logger.info("Adding an unique id in each row of rules...")
+        rules_df = rules_df.withColumn("id", monotonically_increasing_id())
+
+        # Explode the asset_id array in rules_df
+
+        exploded_rules_df = rules_df.select(
+            "id", explode(rules_df.asset_id).alias("asset_id")
+        )
+
+        logger.info("Joining rules and asset data based on asset_id...")
+        joined_df = exploded_rules_df.join(asset_df, on="asset_id", how="left")
+
+        # Group by id and collect data_frequency into a list
+
+        logger.info("Collecting data frequency in a list...")
+        result_df = joined_df.groupBy("id").agg(
+            collect_list("data_frequency").alias("data_frequency"),
+            ((max("data_frequency") + 1) / 2)
+            .cast("integer")
+            .alias("max_data_frequency"),
+        )
+
+        # Join back with rules_df to get the original asset_id array
+        
+        logger.info("Adding data_frequency column...")
+        result_df = rules_df.join(result_df, on="id", how="inner")
+
+        result_df = result_df.withColumn(
+            "window_slide_duration",
+            when(col("function") == "average", col("duration")).otherwise(lit(0))
+            )
+
+        return result_df
+
+    except Exception as e:
+        logger.error(f"Error in add_data_frequency() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+@udf(returnType=StringType())
+def replace_parameter(query, parameter):
+    if parameter in DSS_PARAMETER_MAPPING.keys():
+        return query.replace("$parameter", DSS_PARAMETER_MAPPING[parameter])
+    return query.replace("$parameter", parameter)
+
+# COMMAND ----------
+
+def add_rule_query(logger, rules_df):
+    
+    #This function generates rule SQL query as per the template and return two dataframes - one containing the generated rules and one containing the malformed generated rules.
+    
+    try:
+        # Generating Query based on asset id list. UDF accepts array of string where each element of the array would be utilized for query generation.
+
+        logger.info("Generating rule query...")
+        rules_df = rules_df.withColumn(
+            "query",
+            lit(
+                generate_query_udf(
+                    col("asset_id"),
+                    col("parameter"),
+                    col("class"),
+                    col("data_frequency"),
+                    col("function"),
+                    col("wire"),
+                    col("wire_length_from"),
+                    col("wire_length_to"),
+                    col("duration"),
+                    col("join_condition"),
+                    col("operator"),
+                    col("threshold"),
+                    col("baseline_time")
+                )
+            ),
+        )
+        logger.info("Filtering errorneous records...")
+        rules_null_df = rules_df.filter(col("query") == "data_frequency_null")
+
+        logger.info("Filtering records with generated query...")
+        rules_df = rules_df.filter(col("query") != "data_frequency_null")
+
+        logger.info("Replacing parameters in query with values...")
+
+        rules_df = (
+            rules_df.withColumn(
+                "query", replace_parameter(col("query"), col("parameter"))
+            )
+            .withColumn("query", expr("replace(query,'$operator', operator)"))
+            .withColumn(
+                "query",
+                when(
+                    col("query").contains("$duration"),
+                    expr("replace(query,'$duration', duration)"),
+                ).otherwise(col("query")),
+            )
+            .withColumn("query", expr("replace(query,'$threshold', threshold)"))
+            .withColumn(
+                "query",
+                when(
+                    col("query").contains("$class"),
+                    expr("replace(query,'$class', class)"),
+                ).otherwise(col("query")),
+            )
+        )
+
+        return rules_df, rules_null_df
+
+    except Exception as e:
+        logger.error(f"Error in add_rule_query() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def log_error_rules(
+    logger,
+    error_rules_df,
+    bronze_error_log,
+    job_id,
+    run_id,
+    task_id,
+    workflow_name,
+    task_name,
+):
+    
+    # This function logs the malformed rules in the error log table
+    
+    try:
+        error_rules_df = (
+            error_rules_df.select("asset_id", "input_file")
+            .withColumn("workflow_job_id", lit(job_id))
+            .withColumn("run_id", lit(run_id))
+            .withColumn("task_id", lit(task_id))
+            .withColumn("workflow_name", lit(workflow_name))
+            .withColumn("task_name", lit(task_name))
+            .withColumn("source", col("input_file"))
+            .withColumn(
+                "error_message",
+                concat(
+                    lit(
+                        "Data Frequency missing in asset table for the asset_id/ some of the the asset_ids (in case of 'AND'). List of Asset id/s: "
+                    ),
+                    regexp_replace(concat_ws(", ", col("asset_id")), "^,\\s", ""),
+                ),
+            )
+            .withColumn("additional_context", lit("NA"))
+            .withColumn("last_updated_date", current_timestamp())
+            .drop("asset_id", "input_file")
+        )
+
+        logger.info(f"Writing malformed rules into {bronze_error_log} table...")
+        write_table(logger, error_rules_df, "append", bronze_error_log)
+
+    except Exception as e:
+        logger.error(f"Error in log_error_rules() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def delete_rules_with_update(logger, rules_df, rules_dt):
+    """
+    This function deletes rules from the bronze table where operation is 'update'.
+    Note: Here, update is treated as delete and insert.
+    """
+    try:
+        logger.info(
+            "Deleting the rules from bronze table where operation == 'update' ..."
+        )
+
+        # Merge the rules_src_df with the bronze table rules_dt, deleting rows with matching rule_id where the operation is "update"
+        # Mark the matched rows for deletion and insert the new rows
+        (
+            rules_dt.alias("tgt")
+            .merge(
+                rules_df.alias("src"),
+                "src.rule_id = tgt.rule_id and src.operation = 'update'",
+            )
+            .whenMatchedDelete()
+            .execute()
+        )
+
+    except Exception as e:
+        logger.error(f"Error in delete_rules_with_update() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def write_rules(logger, rules_df, bronze_table_name):
+    """
+    This function writes the rule in the bronze table.
+    """
+    try:
+        logger.info("Removing operation, id, data_frequency and input_file column...")
+        rules_df = rules_df.drop(
+            col("operation"), col("id"), col("data_frequency"), col("input_file")
+        )
+
+        logger.info("Rearranging columns to match the bronze table column sequence...")
+        rules_df = rules_df.select(
+            "rule_id",
+            "rule_name",
+            "tenant_id",
+            "condition_id",
+            "condition_name",
+            "asset_id",
+            "join_condition",
+            "parameter",
+            "operator",
+            "class",
+            "threshold",
+            "duration",
+            "wire",
+            "function",
+            "wire_length_from",
+            "wire_length_to",
+            "rule_run_frequency",
+            "max_data_frequency",
+            "sensor_type",
+            "severity",
+            "risk_register_controls",
+            "window_slide_duration"
+            "query",
+            "last_updated_date",
+        )
+
+        logger.info("Inserting the rules from source file...")
+        write_table(logger, rules_df, "append", bronze_table_name)
+
+    except Exception as e:
+        logger.error(f"Error in write_rules() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def load_rule_bronze(
+    spark,
+    logger,
+    source_file_list,
+    bronze_table_name,
+    bronze_asset_table,
+    bronze_error_log,
+    job_id,
+    run_id,
+    task_id,
+    workflow_name,
+    task_name,
+) -> bool:
+    try:
+        rules_df = get_rules_df(spark, logger, source_file_list)
+
+        if rules_df.count() == 0:
+            logger.info("No rules to create/update/delete...")
+            return False
+
+        rules_df = keep_latest_rules(logger, rules_df)
+
+        delete_rules(spark, logger, rules_df, bronze_table_name)
+
+        rules_df = apply_join_condition(logger, rules_df)
+
+        if rules_df.count() == 0:
+            logger.info("No rules to create/update...")
+            return True
+
+        rules_dt = read_delta_table(spark, logger, bronze_table_name)
+
+        rules_df = get_rules_to_upsert(logger, rules_df, rules_dt)
+
+        asset_df = read_table(spark, logger, bronze_asset_table)
+
+        rules_df = add_data_frequency(logger, rules_df, asset_df)
+
+        rules_df, error_rules_df = add_rule_query(logger, rules_df)
+
+        log_error_rules(
+            logger,
+            error_rules_df,
+            bronze_error_log,
+            job_id,
+            run_id,
+            task_id,
+            workflow_name,
+            task_name,
+        )
+
+        delete_rules_with_update(logger, rules_df, rules_dt)
+
+        write_rules(logger, rules_df, bronze_table_name)
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in load_rule_bronze : {str(e)}")
+        raise
