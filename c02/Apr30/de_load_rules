@@ -185,7 +185,7 @@ def generate_differential_query_for_multi_asset_with_baseline_current(
    threshold: float,
    data_frequency_list: list[int],
    join_condition: str,
-   baseline_timestamp_list: list[int],
+   baseline_timestamp_list: int,
    duration: int,
    threshold_unit: str = "%"
 ) -> str:
@@ -296,115 +296,6 @@ generate_differential_query_for_multi_asset_with_baseline_current(
    join_condition="AND",
    duration=10,
    baseline_timestamp_list=[1714008000],
-   threshold_unit="%"
-)
-
-# COMMAND ----------
-
-def generate_differential_query(
-   table_name: str,
-   baseline_template: str,
-   current_template: str,
-   differential_template: str,
-   parameter: str,
-   timestamp_column: str,
-   asset_id_list: list[str],
-   operator: str,
-   threshold: float,
-   join_condition: str,
-   baseline_timestamp: int,
-   duration: int,
-   threshold_unit: str
-) -> str:
-   """
-   Generates a differential sliding window SQL query.
-   """
-   try:
-       cte_blocks = []
-       anomaly_blocks = []
-
-       for asset_id in asset_id_list:
-           safe_suffix = asset_id.lower().replace("-", "_")
-           # Replace fields inside templates
-           baseline_select = baseline_template \
-               .replace("$parameter", parameter) \
-               .replace("$timestamp", timestamp_column) \
-               .replace("$asset_id", asset_id) \
-               .replace("$baseline_timestamp", str(baseline_timestamp)) \
-               .replace("$table_name", table_name)
-           current_select = current_template \
-               .replace("$parameter", parameter) \
-               .replace("$timestamp", timestamp_column) \
-               .replace("$asset_id", asset_id) \
-               .replace("$table_name", table_name)
-           if threshold_unit == "%":
-               diff_formula = "ABS((d.current_value - b.baseline_value) / b.baseline_value) * 100"
-           else:
-               diff_formula = "(d.current_value - b.baseline_value)"
-
-           differential_select = differential_template \
-               .replace("$timestamp", timestamp_column) \
-               .replace("$diff_formula", diff_formula) \
-               .replace("current_values", f"current_{safe_suffix}") \
-               .replace("baseline_values", f"baseline_{safe_suffix}")
-           # Build final CTE blocks (CTE_NAME AS (SELECT ...))
-           baseline_cte = f"baseline_{safe_suffix} AS ({baseline_select})"
-           current_cte = f"current_{safe_suffix} AS ({current_select})"
-           diff_cte = f"differential_{safe_suffix} AS ({differential_select})"
-           cte_blocks.extend([baseline_cte, current_cte, diff_cte])
-           # Each anomaly block
-           anomaly_block = f"SELECT d.{timestamp_column} AS start_time, d.{timestamp_column} + ({duration} - 1) AS end_time FROM differential_{safe_suffix} d WHERE d.value_difference {operator} {threshold}"
-           anomaly_blocks.append(anomaly_block.strip())
-       # Build WITH clause with ", " separator
-       with_clause = "WITH " + ", ".join(cte_blocks)
-       # Build final_anomalies CTE
-       if join_condition.lower() == "and":
-           final_join = anomaly_blocks[0]
-           for idx in range(1, len(anomaly_blocks)):
-               final_join = f"SELECT t1.start_time, t1.end_time FROM ({final_join}) t1 INNER JOIN ({anomaly_blocks[idx]}) t{idx+1} ON t1.start_time <= t{idx+1}.end_time AND t{idx+1}.start_time <= t1.end_time"
-       elif join_condition.lower() == "or":
-           final_join = " UNION ALL ".join(anomaly_blocks)
-       else:
-           raise ValueError(f"Unsupported join_condition: {join_condition}")
-       # Assemble final query
-       full_query = f"{with_clause}, final_anomalies AS ({final_join}) SELECT DISTINCT start_time, end_time FROM final_anomalies"
-       return full_query.strip()
-   except Exception as e:
-       return f"-- Error generating differential query: {str(e)}"
-
-# COMMAND ----------
-
-generate_differential_query(
-   table_name="flowmeter",
-   baseline_template=PT_BASELINE_TEMPLATE,
-   current_template=PT_CURRENT_TEMPLATE,
-   differential_template=PT_DIFFERENTIAL_TEMPLATE,
-   parameter="surface_flow_rate",
-   timestamp_column="timestamp",
-   asset_id_list=["FLM_002"],
-   operator=">",
-   threshold=50.0,
-   join_condition="and",
-   baseline_timestamp=1714008000,
-     duration = 10,
-     threshold_unit="%"
-)
-
-# COMMAND ----------
-
-generate_differential_query(
-   table_name="pt_gauge",
-   baseline_template=PT_BASELINE_TEMPLATE,
-   current_template=PT_CURRENT_TEMPLATE,
-   differential_template=PT_DIFFERENTIAL_TEMPLATE,
-   parameter="pressure",
-   timestamp_column="epoch_timestamp",
-   asset_id_list=["PTG_001","PTG_002"],
-   operator=">",
-   threshold=50.0,
-   join_condition="and",
-   baseline_timestamp=1714008000,
-   duration = 10,
    threshold_unit="%"
 )
 
@@ -531,6 +422,7 @@ generate_sliding_avg_query_for_multi_asset(
 
 # COMMAND ----------
 
+# DBTITLE 1,Sample  multi asset AVG Query
 # MAGIC %sql
 # MAGIC WITH cte_ptg_001 AS (
 # MAGIC   select
@@ -668,7 +560,7 @@ generate_sliding_avg_query_for_multi_asset(
 def handle_flow_meter(
    asset_id_list: list[str],
    data_frequency_list: list[int],
-   baseline_timestamp_list: list[int] =[0,0],   
+   baseline_timestamp_list: int,   
    function: str = None,
    duration: int = 0,
    join_condition: str = "and",
@@ -772,7 +664,7 @@ handle_flow_meter(
    parameter="surface_flow_rate",
    operator= '>',
    threshold= 20.0,
-   baseline_timestamp_list= [1679729460,1679729999],
+   baseline_timestamp_list= 1679729999,
     threshold_unit='%'
 )
 
@@ -785,7 +677,7 @@ def handle_pressure_temperature(
    duration: int = 0,
    join_condition: str = "and",
    parameter: str = "pressure",
-   baseline_timestamp_list: list[int] = None,
+   baseline_timestamp_list: int,
    operator: str = ">",
    threshold: float = 0.0,
    threshold_unit: str = "%"
@@ -876,7 +768,7 @@ handle_pressure_temperature(
 handle_pressure_temperature(
    asset_id_list=["FM_001","FM_002"],
    data_frequency_list=[2,5],
-   function="average",
+   function="raw",
    duration=10,
    join_condition="and",
    parameter="pressure",
@@ -910,7 +802,7 @@ handle_pressure_temperature(
    parameter="temperature",
    operator= ">",
    threshold= 5000.0,
-   baseline_timestamp= 0,
+   baseline_timestamp_list=[0],
    threshold_unit='t'
 )
 
@@ -924,7 +816,7 @@ def handle_no_of_events(
    duration: int = 0,
    join_condition: str = "and",
    parameter: str = "no_of_events",
-   baseline_timestamp_list: list[int] = None,
+   baseline_timestamp_list: int,
    operator: str = ">",
    threshold: float = 0.0,
    threshold_unit: str = "%"
@@ -997,7 +889,7 @@ def handle_magnitude(
    duration: int = 0,
    join_condition: str = "and",
    parameter: str = "magnitude",
-   baseline_timestamp_list: list[int] = None,
+   baseline_timestamp_list: int,
    operator: str = ">",
    threshold: float = 0.0,
    threshold_unit: str = "%"
@@ -1053,7 +945,7 @@ def handle_magnitude(
 handle_magnitude(
    asset_id_list=["MAG_001", "MAG_002"],
    data_frequency_list=[5, 6],
-   function="raw",
+   function="differential",
    duration=10,
    clss= 0,
    join_condition="and",
@@ -1074,16 +966,16 @@ def handle_dss(
    wire_length_to: int,
    duration: int = 0,
    join_condition: str = "and",
-   baseline_timestamp_list: list[int] = None,
+   baseline_timestamp_list: int,
    parameter: str = "curr_temp",
    operator: str = ">",
    threshold: float = 0.0,
    threshold_unit: str = "%"
 ) -> str:
-   """Handles query generation for 'dss' - extends differential support without affecting raw/average/min/max."""
+   """Handles query generation for 'dss', including multi-asset logic for raw, average, min, max, and differential."""
    if not asset_id_list or len(asset_id_list) != len(data_frequency_list):
        return "data_frequency_null"
-   # Only handle differential separately
+   # Differential logic
    if function == "differential":
        if not baseline_timestamp_list:
            return "baseline_timestamp_missing"
@@ -1102,7 +994,7 @@ def handle_dss(
                final_cte_names.append(final_cte_name)
                baseline_cte = (
                    f"{baseline_cte_name} AS ("
-                   f"{DSS_DIFFERENTIAL_TEMPLATE_BASELINE.replace('$parameter', parameter).replace('$timestamp', 'timestamp').replace('$asset_id', asset_id).replace('$wire', str(wire)).replace('$length_from', str(wire_length_from)).replace('$length_to', str(wire_length_to)).replace('$baseline_timestamp', str(baseline_timestamp_list[idx]))}"
+                   f"{DSS_DIFFERENTIAL_TEMPLATE_BASELINE.replace('$parameter', parameter).replace('$timestamp', 'timestamp').replace('$asset_id', asset_id).replace('$wire', str(wire)).replace('$length_from', str(wire_length_from)).replace('$length_to', str(wire_length_to)).replace('$baseline_timestamp', str(baseline_tim)}"
                    f")"
                )
                current_cte = (
@@ -1150,36 +1042,55 @@ def handle_dss(
    if len(asset_id_list) == 0 or asset_id_list is None or None in asset_id_list:
        return "asset_id_null"
    
-   if function in ["average", "minimum", "maximum"]:
-       function_subquery = generate_subquery(
-           DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION, asset_id_list[0], 1
-       ).replace('$operator', operator).replace('$threshold', str(threshold)).replace('$parameter', parameter)
-       inner_query = (
-           function_subquery.replace("$function", DSS_FUNCTION_MAPPING[function])
-           .replace("$length_from", str(wire_length_from))
-           .replace("$length_to", str(wire_length_to))
-           .replace("$wire", wire)
-       )
-   elif function == "raw":
-       function_subquery = generate_subquery(
-           DSS_TEMPLATE_WITHOUT_CLASS_RAW, asset_id_list[0], 1
-       ).replace('$operator', operator).replace('$threshold', str(threshold)).replace('$parameter', parameter)
-       inner_query = (
-           function_subquery.replace("$wire", wire)
-           .replace("$length_from", str(wire_length_from))
-           .replace("$length_to", str(wire_length_to))
-       )
-   else:
-       return "unsupported_function_for_dss"
-   complete_query = DSS_PREFIX + inner_query
-   return complete_query
+   if function in ["average", "minimum", "maximum", "raw"]:
+       condition_queries = []
+       for i, asset_id in enumerate(asset_id_list):
+           if function in ["average", "minimum", "maximum"]:
+               template = DSS_TEMPLATE_WITHOUT_CLASS_FUNCTION
+               query = generate_subquery(template, asset_id, i+1)\
+                   .replace('$function', DSS_FUNCTION_MAPPING[function])\
+                   .replace('$parameter', parameter)\
+                   .replace('$operator', operator)\
+                   .replace('$threshold', str(threshold))\
+                   .replace('$length_from', str(wire_length_from))\
+                   .replace('$length_to', str(wire_length_to))\
+                   .replace('$wire', wire)
+           else:  # raw
+               template = DSS_TEMPLATE_WITHOUT_CLASS_RAW
+               query = generate_subquery(template, asset_id, i+1)\
+                   .replace('$parameter', parameter)\
+                   .replace('$operator', operator)\
+                   .replace('$threshold', str(threshold))\
+                   .replace('$length_from', str(wire_length_from))\
+                   .replace('$length_to', str(wire_length_to))\
+                   .replace('$wire', wire)
+           condition_queries.append(query)
+       if len(condition_queries) == 1:
+           return f"{DSS_PREFIX}{condition_queries[0]}"
+       if join_condition.lower() == "and":
+           join_clauses = []
+           for i in range(1, len(condition_queries)):
+               join_clauses.append(
+                   f"INNER JOIN {condition_queries[i]} ON condition_1.timestamp = condition_{i+1}.timestamp"
+               )
+           full_query = f"{DSS_PREFIX}{condition_queries[0]} " + " ".join(join_clauses)
+           return full_query
+       elif join_condition.lower() == "or":
+           union_query = " UNION ALL ".join([
+               f"SELECT condition_{i+1}.timestamp as start_time FROM {condition_queries[i]}"
+               for i in range(len(condition_queries))
+           ])
+           return union_query
+       else:
+           return f"-- Error: Unsupported join_condition '{join_condition}'"
+   return "unsupported_function_for_dss"
 
 # COMMAND ----------
 
 handle_dss(
    asset_id_list=["DSS_001","DSS_002"],
    data_frequency_list=[2,5],
-   function="raw",
+   function="average",
    wire="W1",
    wire_length_from=1000,
    wire_length_to=1200,
@@ -1195,105 +1106,117 @@ handle_dss(
 # COMMAND ----------
 
 @udf(returnType=StringType())
-
 def generate_query_udf(
-    asset_id_list: list[str],
-    parameter: str,
-    clss: int,
-    data_frequency_list: list[str],
-    function: str,
-    wire: str,
-    wire_length_from: int,
-    wire_length_to: int,
-    duration: int,
-    join_condition: str,
-    operator: str,
-    threshold: float,
-    baseline_time: int
+   asset_id_list: list[str],
+   parameter: str,
+   clss: int,
+   data_frequency_list: list[str],
+   baseline_timestamp_list: int,
+   function: str,
+   wire: str,
+   wire_length_from: int,
+   wire_length_to: int,
+   duration: int,
+   join_condition: str,
+   operator: str,
+   threshold: float,
+   threshold_unit: str
 ) -> str:
-    try:
-        if parameter in ["pressure", "temperature"]:
-            return handle_pressure_temperature(
-                asset_id_list=asset_id_list,
-                data_frequency_list=data_frequency_list,
-                function=function,
-                duration=duration,
-                join_condition=join_condition,
-                parameter=parameter,
-                operator=operator,
-                threshold=threshold,
-                baseline_timestamp=baseline_time
-            )
-        elif parameter in ["surface_flow_rate", "well_head_pressure"]:
-            return handle_flow_meter(
-                asset_id_list=asset_id_list,
-                data_frequency_list=data_frequency_list,
-                function=function,
-                duration=duration,
-                join_condition=join_condition,
-                parameter=parameter,
-                operator=operator,
-                threshold=threshold,
-                baseline_timestamp=baseline_time
-            )
-        elif parameter in ["dts", "axial_strain", "bend_magnitude"]:
-            return handle_dss(
-                asset_id_list=asset_id_list,
-                data_frequency_list=data_frequency_list,
-                function=function,
-                wire=wire,
-                wire_length_from=wire_length_from,
-                wire_length_to=wire_length_to,
-                duration=duration,
-                join_condition=join_condition,
-                parameter=parameter,
-                operator=operator,
-                threshold=threshold,
-                baseline_timestamp=baseline_time
-            )
-        elif parameter == "magnitude":
-            return handle_magnitude(
-                asset_id_list=asset_id_list,
-                clss=clss,
-                function=function,
-                duration=duration,
-                join_condition=join_condition,
-                operator=operator,
-                threshold=threshold,
-                baseline_timestamp=baseline_time
-            )
-        elif parameter == "no_of_events":
-            return handle_no_of_events(
-                asset_id_list=asset_id_list,
-                clss=clss,
-                function=function,
-                duration=duration,
-                join_condition=join_condition,
-                operator=operator,
-                threshold=threshold,
-                baseline_timestamp=baseline_time
-            )
-        else:
-            raise ValueError(f"Unsupported parameter: {parameter}")
-    except Exception as e:
-        return f"-- Error generating query: {str(e)}"
+   try:
+       # Convert data_frequency_list to integers if not already
+       data_frequency_list = [int(df) for df in data_frequency_list]
+
+       # Main dispatcher logic
+       if parameter in ["pressure", "temperature"]:
+           return handle_pressure_temperature(
+               asset_id_list=asset_id_list,
+               data_frequency_list=data_frequency_list,
+               function=function,
+               duration=duration,
+               join_condition=join_condition,
+               parameter=parameter,
+               baseline_timestamp_list=baseline_timestamp_list,
+               operator=operator,
+               threshold=threshold,
+               threshold_unit=threshold_unit
+           )
+       elif parameter in ["surface_flow_rate", "well_head_pressure"]:
+           return handle_flow_meter(
+               asset_id_list=asset_id_list,
+               data_frequency_list=data_frequency_list,
+               function=function,
+               duration=duration,
+               join_condition=join_condition,
+               parameter=parameter,
+               baseline_timestamp_list=baseline_timestamp_list,
+               operator=operator,
+               threshold=threshold,
+               threshold_unit=threshold_unit
+           )
+       elif parameter in ["dts", "axial_strain", "bend_magnitude"]:
+           return handle_dss(
+               asset_id_list=asset_id_list,
+               data_frequency_list=data_frequency_list,
+               function=function,
+               wire=wire,
+               wire_length_from=wire_length_from,
+               wire_length_to=wire_length_to,
+               duration=duration,
+               join_condition=join_condition,
+               baseline_timestamp_list=baseline_timestamp_list,
+               parameter=DSS_PARAMETER_MAPPING.get(parameter, parameter),  # map curr_temp, axial_strain, etc
+               operator=operator,
+               threshold=threshold,
+               threshold_unit=threshold_unit
+           )
+       elif parameter == "magnitude":
+           return handle_magnitude(
+               asset_id_list=asset_id_list,
+               data_frequency_list=data_frequency_list,
+               clss=clss,
+               function=function,
+               duration=duration,
+               join_condition=join_condition,
+               operator=operator,
+               threshold=threshold,
+               baseline_timestamp_list=baseline_timestamp_list,
+               threshold_unit=threshold_unit
+           )
+       elif parameter == "no_of_events":
+           return handle_no_of_events(
+               asset_id_list=asset_id_list,
+               data_frequency_list=data_frequency_list,
+               clss=clss,
+               function=function,
+               duration=duration,
+               join_condition=join_condition,
+               operator=operator,
+               threshold=threshold,
+               baseline_timestamp_list=baseline_timestamp_list,
+               threshold_unit=threshold_unit
+           )
+       else:
+           return f"-- Error: Unsupported parameter '{parameter}'"
+   except Exception as e:
+       return f"-- Error generating query: {str(e)}"
 
 # COMMAND ----------
 
 generate_query_udf.func(
-   asset_id_list=["PTG_001", "PTG_002"],
-   parameter="pressure",
+   asset_id_list=["dss_001","dss_002"],
+   parameter="axial_strain",
    clss=None,
-   data_frequency_list=["high", "high"],
-   function="differential",
-   wire="",  # not used
-   wire_length_from=0,
-   wire_length_to=0,
+   data_frequency_list=[2,3],
+   function="minimum",
+   wire="80",  # not used
+   wire_length_from=100,
+   wire_length_to=200,
    duration=10,
    join_condition="and",
    operator=">",
    threshold=60.0,
-   baseline_timestamp=0 )
+   baseline_timestamp_list=[1111, 2222],
+   threshold_unit='%' )
 
 # COMMAND ----------
 
@@ -1573,6 +1496,7 @@ def add_rule_query(logger, rules_df):
                     col("parameter"),
                     col("class"),
                     col("data_frequency"),
+                    col("baseline_timestamp_list"),
                     col("function"),
                     col("wire"),
                     col("wire_length_from"),
@@ -1581,7 +1505,8 @@ def add_rule_query(logger, rules_df):
                     col("join_condition"),
                     col("operator"),
                     col("threshold"),
-                    col("baseline_time")
+                    col("threshold_unit")
+                    
                 )
             ),
         )
@@ -1729,6 +1654,8 @@ def write_rules(logger, rules_df, bronze_table_name):
             "sensor_type",
             "severity",
             "risk_register_controls",
+            "baseline_time",
+            "threshold_unit",
             "window_slide_duration"
             "query",
             "last_updated_date",
@@ -1803,4 +1730,3 @@ def load_rule_bronze(
     except Exception as e:
         logger.error(f"Error in load_rule_bronze : {str(e)}")
         raise
-
