@@ -9,3 +9,18 @@ Add support for complex rules in rule engine. complex means more than 1 conditio
 4 - pt1 rule_id-1, group_id - 2, query - "query2"
 5 - fm2 rule_id-1, group_id - 2, query - "query2"
 6 - dss rule_id-1, group_id - 2, query - "query2"
+
+
+pt1,pt2,fm1,fm2,dss
+ 
+rule (rule_id, group_id, query, conditions)
+VALUES
+(1, 1, 'query1', '[{"sensor": "pt1"} && {"sensor": "flm1"} && {"sensor": "dss"}]'),
+(1, 2, 'query2', '[{"sensor": "pt1"} && {"sensor": "flm2"} && {"sensor": "dss"}]'),
+(1, 3, 'query3', '[{"sensor": "pt2"} && {"sensor": "flm1"} && {"sensor": "dss"}]'),
+(1, 4, 'query4', '[{"sensor": "pt2"}&& {"sensor": "flm2"} && {"sensor": "dss"}]');
+ 
+Combination math aka m! * n1 * o! --> Confirmed
+Input is one json only and our assumption of single rules execution first , then  sequentially the complex-combination-logic run would be executed as per the jSON variable condition {condition: n} if condition of n more than 1,  for one rule_id then we would perform this combination logic execution (for AND)- Correct
+
+
