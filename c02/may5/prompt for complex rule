@@ -1,0 +1,98 @@
+
+
+I have a requirement now.
+
+have to combine multiple rules into single 
+
+
+Need to refactor in a way.
+
+for each ruleID: 1 and has condition_id: 1 and ruleID: 1 and has condition_id: 2, ANd ruleID: 1 and has condition_id: 3, and so on.
+
+Combined logic should work.
+
+And logic should work in a way that for each sensor_types it would be accounted as group_id equals (sensortype) ! multiplicaion. if there are two sensortypes then group_id=  s_t_1 ! * s_t_2 ! i.e., should be the total no of query gonna create. with one example below
+
+for rule_id: 1 and condition_id: n' with these many sensor_types: pt1,pt2,fm1,fm2,dss
+
+rule (rule_id, group_id, query, conditions)
+VALUES 
+(1, 1, 'query1', '[{"sensor": "pt1"} && {"sensor": "flm1"} && {"sensor": "dss"}]'),
+(1, 2, 'query2', '[{"sensor": "pt1"} && {"sensor": "flm2"} && {"sensor": "dss"}]'),
+(1, 3, 'query3', '[{"sensor": "pt2"} && {"sensor": "flm1"} && {"sensor": "dss"}]'),
+(1, 4, 'query4', '[{"sensor": "pt2"}&& {"sensor": "flm2"} && {"sensor": "dss"}]');
+
+
+Now help me to achive this.
+
+would be reading JSON and fetch the query field from bronze.rule table 'query' field.
+
+ we have below sample for rule_id: 1 having multiple conditions, hence this complex_rule should be executed.
+
+asset_id gives total no of same sensortype with the combination, and parameter defines which sensortype,
+example:
+["pressure", "temperature"] --> ptgauge
+ ["surface_flow_rate", "well_head_pressure"] --> Flowmeter
+["dts", "axial_strain", "bend_magnitude"] --> dss
+parameter == "magnitude" --> microseismic
+parameter == "no_of_events" --> microseismic
+
+
+{
+    "rule_id": 1,
+    "rule_name": "rule1",
+    "tenant_id": "20976703-b49e-426f-a654-4632742c6589",
+    "conditions": [
+        {
+            "condition_id": 1,
+            "condition_name": "Pressure is greater than 400 psi for 60 seconds",
+            "asset_id": [
+                "TW_001"
+            ],
+            "join_condition": null,
+            "parameter": "pressure",
+            "operator": ">",
+            "class": null,
+            "threshold": 400,
+            "duration": 60,
+            "rule_run_frequency": 1,
+            "sensor_type": "ptgauge",
+            "severity": "high",
+            "wire": null,
+            "function": "raw",
+            "wireLengthFrom": null,
+            "wireLengthTo": null,
+            "risk_register_controls": [
+                5
+            ],
+            "baseline_time": null, // epoch timestamp for differential rules
+            "threshold_unit": "psi"
+        },
+        {
+            "condition_id": 2,
+            "condition_name": "bend magnitude differential over 27th-Feb-2024 for wire-1 from 1000-2000 ft. is greater than 5%",
+            "asset_id": [
+                "TW_001"
+            ],
+            "join_condition": null,
+            "parameter": "bend magnitude",
+            "operator": ">",
+            "class": null,
+            "threshold": 5,
+            "duration": null,
+            "rule_run_frequency": 1,
+            "sensor_type": "dss",
+            "severity": "high",
+            "wire": "1",
+            "function": "differential",
+            "wireLengthFrom": 1000,
+            "wireLengthTo": 2000,
+            "risk_register_controls": [
+                5
+            ],
+            "baseline_time": 1708992000, // epoch timestamp for differential rules
+            "threshold_unit": "%" // [%, psi, degC, degF etc.] "%" is only applicable for differential rule function.
+        }
+    ],
+    "operation": "create/update/delete"
+} 
