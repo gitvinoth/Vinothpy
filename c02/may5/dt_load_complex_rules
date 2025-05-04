@@ -1,0 +1,113 @@
+# Databricks notebook source
+from datetime import datetime
+from delta.tables import DeltaTable
+from pyspark.sql.functions import (
+    input_file_name,
+    split,
+    size,
+    lit,
+    explode,
+    col,
+    when,
+    concat_ws,
+    lower,
+    trim,
+    udf,
+    array,
+    expr,
+    row_number,
+    desc,
+    substring,
+    concat,
+    regexp_replace,
+    max,
+    explode,
+    collect_list,
+    monotonically_increasing_id,
+    nvl,
+    coalesce,
+    current_timestamp,
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    IntegerType,
+    StringType,
+    ArrayType,
+    DoubleType,
+)
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+
+# COMMAND ----------
+
+# Load all rules with multiple conditions from JSON
+rules_df = spark.read.table("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.rules")
+
+# COMMAND ----------
+
+rules_df.display()
+
+# COMMAND ----------
+
+# Step 2: Filter rules having more than one condition_id per rule_id
+multi_condition_rule_ids_df = rules_df.groupBy("rule_id") \
+   .count().filter("count > 1") \
+   .select("rule_id")
+
+# COMMAND ----------
+
+multi_condition_rule_ids_df.display()
+
+# COMMAND ----------
+
+# Step 3: Join back to get all conditions for those rule_ids
+multi_condition_rules_df = rules_df.join(multi_condition_rule_ids_df, on="rule_id", how="inner")
+
+# COMMAND ----------
+
+multi_condition_rules_df.display()
+
+# COMMAND ----------
+
+# Step 4: Group by rule_id and create combined_query using logical AND
+combined_rules_df = multi_condition_rules_df.groupBy("rule_id") \
+   .agg(concat_ws(" INTERSECT ", collect_list(col("query"))).alias("combined_query"))
+
+# COMMAND ----------
+
+combined_rules_df.display()
+
+# COMMAND ----------
+
+# Step 5: Join combined_query back to original DataFrame
+final_df = rules_df.join(combined_rules_df, on="rule_id", how="left")
+
+# COMMAND ----------
+
+final_df.display()
+
+# COMMAND ----------
+
+# Step 6: Write back to bronze_type.rules (overwrite mode with schema merge)
+'''final_df.write.format("delta") \
+   .mode("overwrite") \
+   .option("overwriteSchema", "true") \
+   .saveAsTable("bronze_type.rules")
+   '''
