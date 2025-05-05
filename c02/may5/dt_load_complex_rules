@@ -54,15 +54,51 @@ from pyspark.sql.types import (
 
 # MAGIC %run ../utils/file_metadata_utility
 
+# COMMAND ----------
+
+from math import factorial
+from pyspark.sql.functions import udf
+from pyspark.sql.types import IntegerType
+factorial_udf = udf(lambda x: factorial(x), IntegerType())
 
 # COMMAND ----------
 
-# Load all rules with multiple conditions from JSON
+# Load all rules with multiple conditions from bronze zone
 rules_df = spark.read.table("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.rules")
 
 # COMMAND ----------
 
 rules_df.display()
+
+# COMMAND ----------
+
+from pyspark.sql.functions import count
+
+sensor_counts_df = rules_df.groupBy("rule_id", "sensor_type","condition_id").agg(count("*").alias("sensor_count"))
+
+# COMMAND ----------
+
+sensor_counts_df.display()
+
+# COMMAND ----------
+
+# Step 2: Compute factorial of each sensor_type count
+sensor_counts_with_fact_df = sensor_counts_df.withColumn("factorial", factorial_udf(col("sensor_count")))
+
+# COMMAND ----------
+
+sensor_counts_with_fact_df.display()
+
+# COMMAND ----------
+
+# Step 3: Compute group_id = product of factorials for each rule_id
+from pyspark.sql.functions import expr
+group_id_df = sensor_counts_with_fact_df.groupBy("rule_id") \
+   .agg(expr("aggregate(collect_list(factorial), 1, (acc, x) -> acc * x)").alias("group_id"))
+
+# COMMAND ----------
+
+group_id_df.display()
 
 # COMMAND ----------
 
@@ -88,7 +124,10 @@ multi_condition_rules_df.display()
 
 # Step 4: Group by rule_id and create combined_query using logical AND
 combined_rules_df = multi_condition_rules_df.groupBy("rule_id") \
-   .agg(concat_ws(" INTERSECT ", collect_list(col("query"))).alias("combined_query"))
+   .agg(concat_ws(" INTERSECT ", collect_list(
+       when(col("query").startswith("WITH"), concat(lit("SELECT start_time, end_time from ("), col("query"), lit(")")))
+       .otherwise(col("query"))
+   )).alias("combined_query"))
 
 # COMMAND ----------
 
@@ -102,6 +141,14 @@ final_df = rules_df.join(combined_rules_df, on="rule_id", how="left")
 # COMMAND ----------
 
 final_df.display()
+
+# COMMAND ----------
+
+final_with_group_df = final_df.join(group_id_df.select("rule_id", "group_id"), on="rule_id", how="left")
+
+# COMMAND ----------
+
+final_with_group_df.display()
 
 # COMMAND ----------
 
