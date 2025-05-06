@@ -56,10 +56,14 @@ from pyspark.sql.types import (
 
 # COMMAND ----------
 
+from itertools import product
 from math import factorial
-from pyspark.sql.functions import udf
-from pyspark.sql.types import IntegerType
-factorial_udf = udf(lambda x: factorial(x), IntegerType())
+from pyspark.sql.functions import (
+   col, collect_list, row_number, monotonically_increasing_id,
+   current_timestamp, count, expr, lit, when, concat_ws
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
 
 # COMMAND ----------
 
@@ -72,48 +76,10 @@ rules_df.display()
 
 # COMMAND ----------
 
-from pyspark.sql.functions import count
-
-sensor_counts_df = rules_df.groupBy("rule_id", "sensor_type","condition_id").agg(count("*").alias("sensor_count"))
-
-# COMMAND ----------
-
-sensor_counts_df.display()
-
-# COMMAND ----------
-
-# Step 2: Compute factorial of each sensor_type count
-sensor_counts_with_fact_df = sensor_counts_df.withColumn("factorial", factorial_udf(col("sensor_count")))
-
-# COMMAND ----------
-
-sensor_counts_with_fact_df.display()
-
-# COMMAND ----------
-
-# Step 3: Compute group_id = product of factorials for each rule_id
-from pyspark.sql.functions import expr
-group_id_df = sensor_counts_with_fact_df.groupBy("rule_id") \
-   .agg(expr("aggregate(collect_list(factorial), 1, (acc, x) -> acc * x)").alias("group_id"))
-
-# COMMAND ----------
-
-group_id_df.display()
-
-# COMMAND ----------
-
-# Step 2: Filter rules having more than one condition_id per rule_id
+# Step 2: Filter rules having more than one condition per rule_id
 multi_condition_rule_ids_df = rules_df.groupBy("rule_id") \
    .count().filter("count > 1") \
    .select("rule_id")
-
-# COMMAND ----------
-
-multi_condition_rule_ids_df.display()
-
-# COMMAND ----------
-
-# Step 3: Join back to get all conditions for those rule_ids
 multi_condition_rules_df = rules_df.join(multi_condition_rule_ids_df, on="rule_id", how="inner")
 
 # COMMAND ----------
@@ -122,39 +88,92 @@ multi_condition_rules_df.display()
 
 # COMMAND ----------
 
-# Step 4: Group by rule_id and create combined_query using logical AND
-combined_rules_df = multi_condition_rules_df.groupBy("rule_id") \
-   .agg(concat_ws(" INTERSECT ", collect_list(
-       when(col("query").startswith("WITH"), concat(lit("SELECT start_time, end_time from ("), col("query"), lit(")")))
-       .otherwise(col("query"))
-   )).alias("combined_query"))
+# Step 3: Group queries by rule_id and sensor_type
+grouped_df = multi_condition_rules_df.groupBy("rule_id", "sensor_type") \
+   .agg(collect_list("query").alias("queries"))
 
 # COMMAND ----------
 
-combined_rules_df.display()
+grouped_df.display()
 
 # COMMAND ----------
 
-# Step 5: Join combined_query back to original DataFrame
-final_df = rules_df.join(combined_rules_df, on="rule_id", how="left")
+# Step 4: Convert to Pandas for cross-product logic
+pandas_df = grouped_df.toPandas()
 
 # COMMAND ----------
 
-final_df.display()
+# Step 5: Generate all INTERSECT combinations
+results = []
+for rule_id in pandas_df["rule_id"].unique():
+   subset = pandas_df[pandas_df["rule_id"] == rule_id]
+   query_map = {row["sensor_type"]: row["queries"] for _, row in subset.iterrows()}
+   for combo in product(*query_map.values()):
+       cleaned_combo = []
+       for q in combo:
+           q = q.strip()
+           if q.startswith("WITH"):
+               cleaned_combo.append(f"SELECT start_time, end_time FROM ({q})")
+           else:
+               cleaned_combo.append(q)
+       combined_query = " INTERSECT ".join(cleaned_combo)
+       results.append((rule_id, combined_query))
 
 # COMMAND ----------
 
-final_with_group_df = final_df.join(group_id_df.select("rule_id", "group_id"), on="rule_id", how="left")
+print(results)
 
 # COMMAND ----------
 
-final_with_group_df.display()
+# Convert numpy.int32 to native Python int
+converted_results = [(int(row[0]), row[1]) for row in results]
+
+# Step 6: Create Spark DataFrame from result
+schema = StructType([
+   StructField("rule_id", IntegerType(), True),
+   StructField("combined_query", StringType(), True),
+])
+combo_df = spark.createDataFrame(converted_results, schema)
+display(combo_df)
 
 # COMMAND ----------
 
-# Step 6: Write back to bronze_type.rules (overwrite mode with schema merge)
-'''final_df.write.format("delta") \
-   .mode("overwrite") \
-   .option("overwriteSchema", "true") \
+converted_results
+
+# COMMAND ----------
+
+# Step 7: Assign group_id using row_number
+window_spec = Window.partitionBy("rule_id").orderBy(monotonically_increasing_id())
+combo_df = combo_df.withColumn("group_id", row_number().over(window_spec)) \
+                  .withColumn("created_at", current_timestamp())
+
+# COMMAND ----------
+
+# Step 8: Compute group_id as product of factorials
+sensor_count_df = multi_condition_rules_df.groupBy("rule_id", "sensor_type") \
+   .agg(count("*").alias("sensor_count"))
+
+fact_df = sensor_count_df.withColumn("factorial", expr("factorial(sensor_count)"))
+group_fact_df = fact_df.groupBy("rule_id") \
+   .agg(expr("aggregate(collect_list(factorial), 1L, (acc, x) -> acc * x)").alias("group_id_math"))
+
+# COMMAND ----------
+
+group_fact_df.display()
+
+# COMMAND ----------
+
+# Step 9: Join factorial-based group_id
+final_combined_df = combo_df.join(group_fact_df, on="rule_id", how="left")
+
+# COMMAND ----------
+
+final_combined_df.display()
+
+# COMMAND ----------
+
+# Step 10: Write final results into bronze_type.rules (merge/update or append as needed)
+final_combined_df.write.format("delta") \
+   .mode("append") \
+   .option("mergeSchema", "true") \
    .saveAsTable("bronze_type.rules")
-   '''
