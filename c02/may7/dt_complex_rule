@@ -1,1 +1,414 @@
+# Databricks notebook source
+from datetime import datetime
+from delta.tables import DeltaTable
+from pyspark.sql.functions import (
+    input_file_name,
+    split,
+    size,
+    lit,
+    explode,
+    col,
+    when,
+    concat_ws,
+    lower,
+    trim,
+    udf,
+    array,
+    expr,
+    row_number,
+    desc,
+    substring,
+    concat,
+    regexp_replace,
+    max,
+    explode,
+    collect_list,
+    monotonically_increasing_id,
+    nvl,
+    coalesce,
+    current_timestamp,
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    IntegerType,
+    StringType,
+    ArrayType,
+    DoubleType,
+)
 
+# COMMAND ----------
+
+# Databricks notebook source
+from datetime import datetime
+from delta.tables import DeltaTable
+from pyspark.sql.functions import (
+   col, collect_list, row_number, current_timestamp,
+   count, expr, monotonically_increasing_id
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+from itertools import product
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+# COMMAND ----------
+
+from itertools import product
+from math import factorial
+from pyspark.sql.functions import (
+   col, collect_list, row_number, monotonically_increasing_id,
+   current_timestamp, count, expr, lit, when, concat_ws
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+
+# COMMAND ----------
+
+# Load rules table
+rules_df = spark.read.table("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.rules")
+
+# COMMAND ----------
+
+rules_df.display()
+
+# COMMAND ----------
+
+# Step 1: Filter multi-condition rule_ids
+multi_condition_rule_ids_df = rules_df.groupBy("rule_id").agg(count("*").alias("condition_count")) \
+    .filter("condition_count > 1").select("rule_id")
+
+# COMMAND ----------
+
+multi_condition_rule_ids_df.display()
+
+# COMMAND ----------
+
+# Step 2: Filter only those rules and deduplicate
+
+multi_condition_rules_df = rules_df.join(multi_condition_rule_ids_df, on="rule_id", how="inner") \
+    .dropDuplicates(["rule_id", "sensor_type", "asset_id", "query"])
+
+# COMMAND ----------
+
+multi_condition_rules_df.display()
+
+# COMMAND ----------
+
+# Step 3: Group by rule_id + sensor_type + asset_id to get query sets
+
+grouped_df = multi_condition_rules_df.groupBy("rule_id", "sensor_type", "asset_id") \
+    .agg(collect_list("query").alias("queries"))
+
+# COMMAND ----------
+
+grouped_df.display()
+
+# COMMAND ----------
+
+# Step 4: Convert to Pandas for cross-product generation
+pandas_df = grouped_df.toPandas()
+
+# COMMAND ----------
+
+from itertools import product
+results = []
+for rule_id in pandas_df["rule_id"].unique():
+   subset = pandas_df[pandas_df["rule_id"] == rule_id]
+   query_map = {}
+   for _, row in subset.iterrows():
+       sensor_type = row["sensor_type"]
+       query_map[sensor_type] = row["queries"]
+   value_lists = list(query_map.values())
+   for combo in product(*value_lists):
+       cleaned = []
+       for q in combo:
+           q = q.strip()
+           q_lower = q.lower()
+           if q_lower.startswith("with"):
+               # Always wrap WITH queries
+               wrapped_query = f"SELECT start_time, end_time FROM ({q})"
+           elif q_lower.startswith("select"):
+               # Check if 'end_time' is in the SELECT clause (before first FROM)
+               select_clause = q_lower.split("from")[0]
+               if "end_time" not in select_clause:
+                   wrapped_query = f"SELECT start_time, '' AS end_time FROM ({q})"
+               else:
+                   wrapped_query = q
+           else:
+               # Fallback default wrapping
+               wrapped_query = f"SELECT start_time, '' AS end_time FROM ({q})"
+           cleaned.append(wrapped_query)
+       combined_query = " INTERSECT ".join(cleaned)
+       results.append((int(rule_id), combined_query))
+
+# COMMAND ----------
+
+print(results)
+
+# COMMAND ----------
+
+# Step 6: Convert results to DataFrame
+
+import numpy as np
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+
+# Convert numpy.int32 to standard Python int
+converted_results = [(int(row[0]), row[1]) for row in results]
+
+schema = StructType([
+    StructField("rule_id", IntegerType(), True),
+    StructField("combined_query", StringType(), True),
+])
+
+combo_df = spark.createDataFrame(converted_results, schema)
+display(combo_df)
+
+# COMMAND ----------
+
+combo_df.display()
+
+# COMMAND ----------
+
+# Step 7: Assign group_id (1-based within rule_id) and timestamp
+
+window_spec = Window.partitionBy("rule_id").orderBy(monotonically_increasing_id())
+
+combo_df = combo_df.withColumn("group_id", row_number().over(window_spec)) \
+    .withColumn("combined_query_updated_at", current_timestamp())
+
+# COMMAND ----------
+
+combo_df.display()
+
+# COMMAND ----------
+
+# Step 8: Compute factorial-based group math
+
+sensor_asset_df = multi_condition_rules_df.groupBy("rule_id", "sensor_type", "asset_id") \
+    .agg(count("*").alias("sensor_count"))
+
+factorial_df = sensor_asset_df.withColumn("factorial", expr("factorial(sensor_count)"))
+
+group_fact_df = factorial_df.groupBy("rule_id") \
+    .agg(expr("aggregate(collect_list(factorial), 1L, (acc, x) -> acc * x)").alias("group_id_math"))
+
+# COMMAND ----------
+
+final_combined_df = combo_df.join(group_fact_df, on="rule_id", how="left")
+
+# COMMAND ----------
+
+final_combined_df.display()
+
+# COMMAND ----------
+
+# Step 10: Write/Update into bronze_type.rules (add combined_query, group_id, group_id_math)
+
+from delta.tables import DeltaTable
+
+rules_table = DeltaTable.forName(spark, "bronze_type.rules")
+
+update_df = final_combined_df.select("rule_id", "group_id", "combined_query", "combined_query_updated_at", "group_id_math")
+
+# Perform UPSERT logic using rule_id + group_id
+
+rules_table.alias("target").merge(
+    update_df.alias("source"),
+    "target.rule_id = source.rule_id AND target.group_id = source.group_id"
+).whenMatchedUpdate(set={
+    "combined_query": "source.combined_query",
+    "combined_query_updated_at": "source.combined_query_updated_at",
+    "group_id_math": "source.group_id_math"
+}).whenNotMatchedInsert(values={
+    "rule_id": "source.rule_id",
+    "group_id": "source.group_id",
+    "combined_query": "source.combined_query",
+    "combined_query_updated_at": "source.combined_query_updated_at",
+    "group_id_math": "source.group_id_math"
+}).execute()
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+# Step 4: Cross-product with robust query wrapping
+def wrap_query(q):
+   q = q.strip()
+   if "end_time" not in q.lower():
+       return f"SELECT start_time, NULL as end_time FROM ({q})"
+   else:
+       return f"SELECT start_time, end_time FROM ({q})"
+results = []
+for rule_id in pandas_df["rule_id"].unique():
+   subset = pandas_df[pandas_df["rule_id"] == rule_id]
+   query_map = {row["sensor_type"]: row["queries"] for _, row in subset.iterrows()}
+   for combo in product(*query_map.values()):
+       cleaned_combo = [wrap_query(q) for q in combo]
+       combined_query = " INTERSECT ".join(cleaned_combo)
+       results.append((int(rule_id), combined_query))
+
+# COMMAND ----------
+
+print(results)
+
+# COMMAND ----------
+
+# Step 5: Create Spark DataFrame from result
+schema = StructType([
+   StructField("rule_id", IntegerType(), True),
+   StructField("combined_query", StringType(), True),
+])
+combo_df = spark.createDataFrame(results, schema)
+
+# COMMAND ----------
+
+combo_df.display()
+
+# COMMAND ----------
+
+# Step 6: Assign sequential group_id
+window_spec = Window.partitionBy("rule_id").orderBy(monotonically_increasing_id())
+combo_df = combo_df.withColumn("group_id", row_number().over(window_spec)) \
+                  .withColumn("combined_query_updated_at", current_timestamp())
+
+# COMMAND ----------
+
+# Step 7: Compute factorial-based group size
+sensor_count_df = multi_condition_rules_df.groupBy("rule_id", "sensor_type") \
+   .agg(count("*").alias("sensor_count"))
+fact_df = sensor_count_df.withColumn("factorial", expr("factorial(sensor_count)"))
+group_fact_df = fact_df.groupBy("rule_id") \
+   .agg(expr("aggregate(collect_list(factorial), 1L, (acc, x) -> acc * x)").alias("group_id_math"))
+
+# COMMAND ----------
+
+sensor_count_df.display()
+
+# COMMAND ----------
+
+group_fact_df.display()
+
+# COMMAND ----------
+
+# Step 8: Join into final output
+final_combined_df = combo_df.join(group_fact_df, on="rule_id", how="left")
+
+# COMMAND ----------
+
+final_combined_df.display()
+
+# COMMAND ----------
+
+# Step 9: Write back to bronze_type.rules (merge/update style)
+rules_target_df = spark.read.table("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.rules")
+merged_df = rules_target_df.alias("base").join(
+   final_combined_df.alias("new"),
+   on="rule_id",
+   how="left"
+).select(
+   "base.*",
+   col("new.combined_query"),
+   col("new.group_id_math").alias("group_id"),
+   col("new.combined_query_updated_at")
+)
+
+# COMMAND ----------
+
+merged_df.display()
+
+# COMMAND ----------
+
+# Save or overwrite to bronze_type.rules table
+merged_df.write.format("delta") \
+  .mode("overwrite") \
+  .option("overwriteSchema", "true") \
+  .saveAsTable("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_type.rules")
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+# Step 7: Assign group_id using row_number
+window_spec = Window.partitionBy("rule_id").orderBy(monotonically_increasing_id())
+combo_df = combo_df.withColumn("group_id", row_number().over(window_spec)) \
+                  .withColumn("created_at", current_timestamp())
+
+# COMMAND ----------
+
+# Step 8: Compute group_id as product of factorials
+sensor_count_df = multi_condition_rules_df.groupBy("rule_id", "asset_id") \
+   .agg(count("*").alias("sensor_count"))
+
+fact_df = sensor_count_df.withColumn("factorial", expr("factorial(sensor_count)"))
+group_fact_df = fact_df.groupBy("rule_id") \
+   .agg(expr("aggregate(collect_list(factorial), 1L, (acc, x) -> acc * x)").alias("group_id_math"))
+
+# COMMAND ----------
+
+group_fact_df.display()
+
+# COMMAND ----------
+
+# Step 9: Join factorial-based group_id
+final_combined_df = combo_df.join(group_fact_df, on="rule_id", how="left")
+
+# COMMAND ----------
+
+final_combined_df.display()
+
+# COMMAND ----------
+
+# Add update timestamp column
+final_combined_df = final_combined_df.withColumn("combined_query_updated_dte", current_timestamp())
+
+# COMMAND ----------
+
+# Step 10: Write final results into bronze_type.rules (merge/update or append as needed)
+final_combined_df.write.format("delta") \
+   .mode("append") \
+   .option("mergeSchema", "true") \
+   .saveAsTable("bronze_type.rules")
