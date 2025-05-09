@@ -1,0 +1,788 @@
+# Databricks notebook source
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/utility_functions
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/workflow_metadata_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/constants
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+# COMMAND ----------
+
+import asyncio
+import json
+import numpy
+import os
+import time
+
+from azure.servicebus.aio import ServiceBusClient
+from azure.servicebus import ServiceBusMessage
+from azure.identity.aio import ClientSecretCredential
+from datetime import datetime
+from delta.tables import DeltaTable
+from multiprocessing import Process
+from multiprocessing.pool import ThreadPool
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import lit, col, array, concat_ws
+
+# COMMAND ----------
+
+# for on-prem begin
+try:
+    if dbutils:
+        pass  # pragma: no cover
+except NameError:
+    from src.utils.logger import configure_logger
+    from src.utils.on_premise.utility_functions import (
+        get_spark_context,
+        get_task_env,
+        get_table_name,
+        get_job_and_run_id,
+        move_file,
+    )
+    from src.utils.read_utility import read_delta_table
+    from src.utils.on_premise.constants import (
+        RULES_TABLE_NAME,
+        ERROR_LOG_TABLE_NAME,
+        RULES_BUCKET,
+        LOG_FILE_TYPE,
+    )
+
+# COMMAND ----------
+
+def get_max_time_from_bronze(spark, logger, catalog, sensor_type):
+    """This function returns the maximum timestamp from the bronze zone table for the given sensor type."""
+    try:
+        max_timestamp = None
+        if sensor_type == "pt_gauge":
+            max_timestamp = spark.sql(
+                f"""select max(timestamp) as max 
+                    from (
+                    select unix_timestamp(to_timestamp(concat(Date, " ", Time), "d-MMM-yy H:mm:ss")) as timestamp
+                    from `{catalog}`.bronze_zone.pt_gauge_electricals
+                    union all
+                    select unix_timestamp(to_timestamp(time_utc, "MM/dd/yyyy HH:mm:ss")) as timestamp
+                    from `{catalog}`.bronze_zone.pt_gauge
+                    )"""
+            ).collect()[0]["max"]
+        elif sensor_type == "micro_seismic":
+            max_timestamp = spark.sql(
+                f"select max(epoch_timestamp) as max from `{catalog}`.bronze_zone.microseismic_events"
+            ).collect()[0]["max"]
+        elif sensor_type == "flowmeter":
+            max_timestamp = spark.sql(
+                f"""select max(timestamp) as max 
+                    from (
+                    select unix_timestamp(to_timestamp(time_date, "yyyy-dd-MM HH:mm:ss")) as timestamp
+                    from `{catalog}`.bronze_zone.flowmeter_data_as_rows
+                    )"""
+            ).collect()[0]["max"]
+        elif sensor_type == "dss":
+            max_timestamp = spark.sql(
+                f'SELECT max(`timestamp`) as max from (SELECT unix_timestamp(date_utc,"dd-MMM-yyyy HH:mm:ss") as `timestamp` from `{catalog}`.bronze_zone.dss)'
+            ).collect()[0]["max"]
+        else:
+            logger.info("Unknown sensor type!")
+        return max_timestamp
+    except Exception as e:
+        raise e
+
+# COMMAND ----------
+
+def get_last_run_time(
+    spark, logger, catalog: str, table_name: str, sensor_type: str, workflow_id: str
+) -> int:
+    """This function returns the last run time for the given sensor type and workflow id."""
+    try:
+        # Fetching the last_run_time from the rule_execution_run_time table for subsequent runs after first run
+        logger.info(
+            f"Fetching last run time for workflow : {workflow_id} and sensor : {sensor_type}..."
+        )
+        try:
+            last_run_time = (
+                read_delta_table(spark, logger, table_name)
+                .toDF()
+                .filter(
+                    (col("workflow_id") == workflow_id)
+                    & (col("sensor_type") == sensor_type)
+                )
+                .collect()[0]["last_run_time"]
+            )
+        except IndexError as e:
+            last_run_time = 0
+
+        # Fetching the last time from the bronze table when the workflow runs for the first time
+        if (last_run_time == 0) or (last_run_time == None):
+            logger.info(
+                f"Last run time not found in the {table_name} table... Now fetching from the bronze zone..."
+            )
+            max_timestamp = get_max_time_from_bronze(
+                spark, logger, catalog, sensor_type
+            )
+
+            last_run_time = max_timestamp
+
+        return last_run_time
+    except Exception as e:
+        logger.error(f"Error in get_last_run_time : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def update_last_run_time(
+    spark,
+    logger,
+    table_name: str,
+    sensor_type: str,
+    workflow_id: str,
+    updated_last_run_time: int,
+) -> None:
+    """This function updates the last run time in the rule_execution_run_time table for the given sensor type and workflow id."""
+    try:
+        logger.info(
+            f"Updating the {table_name} table with updated last run time value {updated_last_run_time} for sensor {sensor_type} and workflow {workflow_id}..."
+        )
+        rule_execution_run_time_dt = read_delta_table(spark, logger, table_name)
+
+        schema = rule_execution_run_time_dt.toDF().schema
+
+        data = [(workflow_id, sensor_type, updated_last_run_time, datetime.now())]
+
+        rule_execution_run_time_df = spark.createDataFrame(data=data, schema=schema)
+
+        max_retries = 10
+        delay = 5
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                rule_execution_run_time_dt.alias("a").merge(
+                    rule_execution_run_time_df.alias("b"),
+                    "a.workflow_id = b.workflow_id and a.sensor_type = b.sensor_type",
+                ).whenMatchedUpdate(
+                    set={
+                        "last_run_time": "b.last_run_time",
+                        "last_updated_date": "b.last_updated_date",
+                    }
+                ).whenNotMatchedInsert(
+                    values={
+                        "workflow_id": "b.workflow_id",
+                        "sensor_type": "b.sensor_type",
+                        "last_run_time": "b.last_run_time",
+                        "last_updated_date": "b.last_updated_date",
+                    }
+                ).execute()
+
+                break
+
+            except Exception as e:
+                if "concurrent update" in str(e):
+                    logger.info(
+                        f"Concurrent update detected on attempt {attempt}. Retrying in {delay} seconds..."
+                    )
+                    time.sleep(delay)
+                    delay = delay * 2
+
+                    if attempt == max_retries:
+                        logger.error(
+                            f"Failed to update {table_name} table with updated last run time value {updated_last_run_time} for sensor {sensor_type} and workflow {workflow_id} after {max_retries} attempts due to concurrent update issues."
+                        )
+                        raise e
+
+    except Exception as e:
+        logger.error(f"Error in update_last_run_time : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def is_empty_bronze(spark, logger, catalog, sensor_type):
+    """This function checks the presence of data in bronze zone for the given sensor type. Returns the count of the dataframe."""
+    try:
+        bronze_count = None
+        if sensor_type == "pt_gauge":
+            bronze_count = spark.sql(
+                f"""select count(*) 
+                        from (
+                        select count(*)
+                        from `{catalog}`.bronze_zone.pt_gauge_electricals
+                        union all
+                        select count(*)
+                        from `{catalog}`.bronze_zone.pt_gauge
+                        )"""
+            ).collect()[0]["count(1)"]
+        elif sensor_type == "micro_seismic":
+            bronze_count = spark.sql(
+                f"select count(*) from `{catalog}`.bronze_zone.microseismic_events"
+            ).collect()[0]["count(1)"]
+        elif sensor_type == "flowmeter":
+            bronze_count = spark.sql(
+                f"select count(*) from `{catalog}`.bronze_zone.flowmeter_data_as_rows"
+            ).collect()[0]["count(1)"]
+        elif sensor_type == "dss":
+            bronze_count = spark.sql(
+                f"select count(*) from `{catalog}`.silver_zone.dss"
+            ).collect()[0]["count(1)"]
+
+        return bronze_count
+    except Exception as e:
+        raise e
+
+# COMMAND ----------
+
+class RuleEngine:
+    def __init__(
+        self,
+        spark,
+        logger,
+        process_name,
+        rules_list,
+        delay,
+        engine_run_frequency,
+        topic_name,
+        fully_qualified_namespace,
+        scope,
+        last_run_time,
+        catalog,
+        downtime_gap_multiplier,
+    ):
+        self.spark = spark
+        self.logger = logger
+        self.process_name = process_name
+        self.rules_list = rules_list
+        self.delay = delay
+        self.engine_run_frequency = engine_run_frequency
+        self.topic_name = topic_name
+        self.fully_qualified_namespace = fully_qualified_namespace
+        self.scope = scope
+        self.last_run_time = last_run_time
+        self.catalog = catalog
+        self.downtime_gap_multiplier = downtime_gap_multiplier
+
+    async def start(self):
+        try:
+            self.logger.info(
+                f"Process : {self.process_name} | Fetching service bus connection details..."
+            )
+            AZURE_TENANT_ID = dbutils.secrets.get(self.scope, "AZURE_TENANT_ID")
+            AZURE_CLIENT_ID = dbutils.secrets.get(self.scope, "AZURE_CLIENT_ID")
+            AZURE_CLIENT_SECRET = dbutils.secrets.get(self.scope, "AZURE_CLIENT_SECRET")
+
+            self.logger.info(
+                f"Process : {self.process_name} | Creating Service Bus client..."
+            )
+            credential = ClientSecretCredential(
+                AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+            )
+            async with ServiceBusClient(
+                self.fully_qualified_namespace,
+                credential,
+                retry_total=22,
+                retry_backoff_factor=5,
+                retry_backoff_max=30,
+                retry_mode="exponential",
+            ) as servicebus_client:
+                sender = servicebus_client.get_topic_sender(topic_name=self.topic_name)
+                async with sender:
+                    self.tasks = []
+                    for rule in self.rules_list:
+                        params = {
+                            "rule_id": rule["rule_id"],
+                            "rule_name": rule["rule_name"],
+                            "tenant_id": rule["tenant_id"],
+                            "condition_id": rule["condition_id"],
+                            "condition_name": rule["condition_name"],
+                            "asset_id": rule["asset_id"],
+                            "join_condition": rule["join_condition"],
+                            "parameter": rule["parameter"],
+                            "operator": rule["operator"],
+                            "class_val": rule["class"],
+                            "threshold": rule["threshold"],
+                            "duration": rule["duration"],
+                            "wire": rule["wire"],
+                            "function": rule["function"],
+                            "wire_length_from": rule["wire_length_from"],
+                            "wire_length_to": rule["wire_length_to"],
+                            "rule_run_frequency": rule["rule_run_frequency"],
+                            "sensor_type": rule["sensor_type"],
+                            "severity": rule["severity"],
+                            "risk_register_controls": rule["risk_register_controls"],
+                            "query": rule["query"],
+                            "max_data_frequency": rule["max_data_frequency"],
+                            "delay": self.delay,
+                            "engine_run_frequency": self.engine_run_frequency,
+                            "last_run_time": self.last_run_time,
+                            "sender": sender,
+                            "catalog": self.catalog,
+                            "downtime_gap_multiplier": self.downtime_gap_multiplier,
+                        }
+
+                        self.tasks.append(
+                            asyncio.create_task(
+                                self.execute_rule(
+                                    self.spark,
+                                    self.logger,
+                                    params,
+                                )
+                            )
+                        )
+                    await asyncio.wait(self.tasks)
+                await credential.close()
+        except Exception as e:
+            self.logger.error(
+                f"Process : {self.process_name} | Error in start : {str(e)}"
+            )
+            raise
+
+    def get_start_and_end_time(
+        self,
+        logger,
+        rule_run_frequency: int,
+        delay: int,
+        engine_run_frequency: int,
+        run_time: int,
+        downtime_gap_multiplier: int,
+    ):
+        try:
+            self.logger.info(
+                f"Process : {self.process_name} | Computing Start time and End time..."
+            )
+            start_time_str = None
+            end_time_str = None
+
+            current_time = run_time - delay
+            mod = current_time % rule_run_frequency
+
+            if rule_run_frequency <= engine_run_frequency:
+                end_time = (
+                    current_time
+                    - mod
+                    + (engine_run_frequency * downtime_gap_multiplier)
+                )
+                end_time_str = str(int(end_time))
+                start_time = (
+                    current_time
+                    - engine_run_frequency
+                    - (current_time - engine_run_frequency) % rule_run_frequency
+                )
+                start_time_str = str(int(start_time))
+            elif mod < engine_run_frequency:
+                end_time = (
+                    current_time
+                    - mod
+                    + (engine_run_frequency * downtime_gap_multiplier)
+                )
+                end_time_str = str(int(end_time))
+                start_time = (
+                    end_time
+                    - rule_run_frequency
+                    - (engine_run_frequency * downtime_gap_multiplier)
+                )
+                start_time_str = str(int(start_time))
+            return start_time_str, end_time_str
+        except Exception as e:
+            self.logger.error(
+                f"Process : {self.process_name} | Error in get_start_and_end_time : {str(e)}"
+            )
+            raise
+
+    async def execute_rule(
+        self,
+        spark,
+        logger,
+        params: dict,
+    ) -> None:
+        try:
+            rule_id = params.get("rule_id")
+            rule_name = params.get("rule_name")
+            tenant_id = params.get("tenant_id")
+            condition_id = params.get("condition_id")
+            condition_name = params.get("condition_name")
+            asset_id = params.get("asset_id")
+            join_condition = params.get("join_condition")
+            parameter = params.get("parameter")
+            operator = params.get("operator")
+            class_val = params.get("class_val")
+            threshold = params.get("threshold")
+            duration = params.get("duration")
+            wire = params.get("wire")
+            function = params.get("function")
+            wire_length_from = params.get("wire_length_from")
+            wire_length_to = params.get("wire_length_to")
+            rule_run_frequency = params.get("rule_run_frequency")
+            sensor_type = params.get("sensor_type")
+            severity = params.get("severity")
+            risk_register_controls = params.get("risk_register_controls")
+            query = params.get("query")
+            max_data_frequency = params.get("max_data_frequency")
+            delay = params.get("delay")
+            engine_run_frequency = params.get("engine_run_frequency")
+            last_run_time = params.get("last_run_time")
+            sender = params.get("sender")
+            catalog = params.get("catalog")
+            downtime_gap_multiplier = params.get("downtime_gap_multiplier")
+
+            # calling function and obtaining start and end time for each row of Rules table
+
+            start_time_str, end_time_str = self.get_start_and_end_time(
+                self.logger,
+                rule_run_frequency,
+                delay,
+                engine_run_frequency,
+                last_run_time,
+                downtime_gap_multiplier,
+            )
+
+            self.logger.info(
+                f"Process : {self.process_name} | Rule id : {rule_id} | Executing for rule_id : {rule_id}, condition_id : {condition_id}, asset_id : {asset_id}, parameter : {parameter}, join_condition : {join_condition}"
+            )
+
+            if (start_time_str is not None) and (end_time_str is not None):
+                formatted_query = (
+                    query.replace("$catalog", catalog)
+                    .replace("$start_time", start_time_str)
+                    .replace("$end_time", end_time_str)
+                )
+                self.logger.info(
+                    f"Process : {self.process_name} | Rule id : {rule_id} | start_time_str : {start_time_str}, end_time_str : {end_time_str}, data_frequency : {max_data_frequency}, query : {formatted_query}"
+                )
+                results = spark.sql(formatted_query).cache()
+                
+                # Checking if any anomaly is found. If no anomaly is found, nothing will be sent to service bus
+                if results.count() > 0:
+                    anomalies = []
+
+                    # Creating the Anomalies list
+                    for result_row in results.collect():
+                        result_dict = result_row.asDict()
+                        anomalies.append(result_dict)
+                    # Creating the time range dictionary
+                    time_range_dict = {
+                        "start": int(start_time_str) - (max_data_frequency * 2 - 1),
+                        "end": int(end_time_str),
+                    }
+
+                    # Creating the rule dictionary
+                    rule_dict = {}
+                    rule_dict["rule_id"] = rule_id
+                    rule_dict["rule_name"] = rule_name
+                    rule_dict["tenant_id"] = tenant_id
+                    rule_dict["condition_id"] = condition_id
+                    rule_dict["condition_name"] = condition_name
+                    rule_dict["asset_id"] = asset_id
+                    rule_dict["join_condition"] = join_condition
+                    rule_dict["parameter"] = parameter
+                    rule_dict["operator"] = operator
+                    rule_dict["class"] = class_val
+                    rule_dict["threshold"] = threshold
+                    rule_dict["duration"] = duration
+                    rule_dict["wire"] = wire
+                    rule_dict["function"] = function
+                    rule_dict["wire_length_from"] = wire_length_from
+                    rule_dict["wire_length_to"] = wire_length_to
+                    rule_dict["rule_run_frequency"] = rule_run_frequency
+                    rule_dict["sensor_type"] = sensor_type
+                    rule_dict["severity"] = severity
+                    rule_dict["risk_register_controls"] = risk_register_controls
+
+                    self.logger.info(
+                        f"Process : {self.process_name} | Rule id : {rule_id} | Preparing the message..."
+                    )
+                    message = {
+                        "anomalies": anomalies,
+                        "time_range": time_range_dict,
+                        "rule": rule_dict,
+                    }
+
+                    self.logger.info(
+                        f"Process : {self.process_name} | Rule id : {rule_id} | Sending the message..."
+                    )
+                    await sender.send_messages(
+                        ServiceBusMessage(str(json.dumps(message)))
+                    )
+                    self.logger.info(
+                        f"Process : {self.process_name} | Rule id : {rule_id} | {json.dumps(message)} message sent successfully..."
+                    )
+                else:
+                    self.logger.info(
+                        f"Process : {self.process_name} | Rule id : {rule_id} | No anomaly found for rule_id : {rule_id}, condition_id : {condition_id},asset_id : {asset_id },join_condition : {join_condition}"
+                    )
+            else:
+                self.logger.info(
+                    f"Process : {self.process_name} | Rule id : {rule_id} | Rule not executed"
+                )
+            self.logger.info(
+                f"Process : {self.process_name} | Rule id : {rule_id} | Completed successfully"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Error in execute_rule :  Process : {self.process_name} | Rule id : {rule_id} | Encountered error :  {str(e)}"
+            )
+            raise
+
+# COMMAND ----------
+
+def get_rules_list(
+    logger, df: DataFrame, no_of_chunks: int, config_params: dict
+) -> list:
+    """This function returns a rules list from the given dataframe"""
+    try:
+        row_list = []
+        for row in df.collect():
+            row_list.append(row.asDict())
+        array = numpy.array_split(row_list, no_of_chunks)
+
+        rules_list = []
+        for element in array:
+            rules_list.append((element, config_params))
+        return rules_list
+    except Exception as e:
+        logger.error(f"Error in get_rules_list : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def run(spark, logger, rules_list: list, config_params: dict) -> None:
+    try:
+        process_name = Process().name
+        logger.info(f"Running {process_name}...")
+        if (len(rules_list) == 0) or (rules_list is None):
+            logger.info(f"Process : {process_name} | No Rules to execute...")
+        else:
+            delay = config_params["delay"]
+            engine_run_frequency = config_params["engine_run_frequency"]
+            topic_name = config_params["topic_name"]
+            fully_qualified_namespace = config_params["fully_qualified_namespace"]
+            scope = config_params["scope"]
+            last_run_time = config_params["last_run_time"]
+            catalog = config_params["catalog"]
+            downtime_gap_multiplier = config_params["downtime_gap_multiplier"]
+
+            rule_execution = RuleEngine(
+                spark,
+                logger,
+                process_name,
+                rules_list,
+                delay,
+                engine_run_frequency,
+                # data_frequency,
+                topic_name,
+                fully_qualified_namespace,
+                scope,
+                last_run_time,
+                catalog,
+                downtime_gap_multiplier,
+            )
+            asyncio.run(rule_execution.start())
+    except Exception as e:
+        logger.error(f"Error in run : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def execute(
+    spark,
+    logger,
+    catalog: str,
+    table_name: str,
+    sensor_type: str,
+    delay: int,
+    engine_run_frequency: int,
+    topic_name: str,
+    fully_qualified_namespace: str,
+    scope: str,
+    run_time_table_name: str,
+    workflow_id: str,
+    downtime_seconds: int,
+) -> None:
+    try:
+        rules_df = read_delta_table(spark, logger, table_name).toDF()
+
+        # Filtering data on sensor_type[passed from Workflow task]
+        if sensor_type == "pt_gauge":
+            rules_filtered_df = rules_df.filter(
+                (col("parameter") == "pressure") | (col("parameter") == "temperature")
+            )
+        elif sensor_type == "micro_seismic":
+            rules_filtered_df = rules_df.filter(
+                (col("parameter") == "no_of_events") | (col("parameter") == "magnitude")
+            )
+        elif sensor_type == "flowmeter":
+            rules_filtered_df = rules_df.filter(
+                (col("parameter") == "surface_flow_rate")
+                | (col("parameter") == "well_head_pressure")
+            )
+        elif sensor_type == "dss":
+            rules_filtered_df = rules_df.filter(
+                (col("parameter") == "dts")
+                | (col("parameter") == "axial_strain")
+                | (col("parameter") == "bend_magnitude")
+            )
+
+        if (
+            rules_filtered_df.count() > 0
+            and is_empty_bronze(spark, logger, catalog, sensor_type) > 0
+        ):
+            last_run_time = get_last_run_time(
+                spark, logger, catalog, run_time_table_name, sensor_type, workflow_id
+            )
+            current_time = int(datetime.now().timestamp())
+            logger.info(f"Current time is : {current_time}")
+            max_bronze_time = get_max_time_from_bronze(
+                spark, logger, catalog, sensor_type
+            )
+            logger.info(f"Max bronze time is : {max_bronze_time}")
+
+            def get_data_differential(max_bronze_time_value, current_time_value):
+                if (max_bronze_time_value is not None) and (max_bronze_time_value) > 0 :
+                    return current_time_value - max_bronze_time_value
+                return 0
+
+            data_differential = get_data_differential(max_bronze_time, current_time)
+            logger.info(f"Data differential is : {data_differential}")
+
+            def get_downtime_gap_multiplier(
+                current_time_value,
+                data_differential_value,
+                last_run_time_value,
+                engine_run_frequency_value,
+            ):
+                if (current_time_value - data_differential_value) > last_run_time_value:
+                    return (
+                        current_time_value
+                        - data_differential_value
+                        - last_run_time_value
+                    ) / engine_run_frequency_value
+                else:
+                    return 0
+
+            if last_run_time < current_time - data_differential - downtime_seconds:
+                last_run_time = current_time - data_differential - downtime_seconds
+            downtime_gap_multiplier = get_downtime_gap_multiplier(
+                current_time, data_differential, last_run_time, engine_run_frequency
+            )
+            logger.info(f"Downtime gap multiplier is : {downtime_gap_multiplier}")
+            config_params = {
+                "delay": delay,
+                "engine_run_frequency": engine_run_frequency,
+                "topic_name": topic_name,
+                "fully_qualified_namespace": fully_qualified_namespace,
+                "scope": scope,
+                "last_run_time": last_run_time,
+                "downtime_gap_multiplier": downtime_gap_multiplier,
+                "catalog": catalog,
+            }
+
+            no_of_cores = 2 * os.cpu_count()
+            rules_list = get_rules_list(
+                logger, rules_filtered_df, no_of_cores, config_params
+            )
+            # Add spark and logger to each tuple in the rules_list
+            new_rules_list = [(spark, logger) + rule_tuple for rule_tuple in rules_list]
+
+            logger.info(f"Starting Threadpool for no_of_cores : {no_of_cores}")
+
+            with ThreadPool(no_of_cores) as pool:
+                pool.starmap(run, new_rules_list)
+
+            # After Rule exection completion
+            if downtime_gap_multiplier > 0:
+                last_run_time = int(
+                    last_run_time + engine_run_frequency * downtime_gap_multiplier
+                )
+            updated_last_run_time = int(last_run_time + engine_run_frequency)
+            update_last_run_time(
+                spark,
+                logger,
+                run_time_table_name,
+                sensor_type,
+                workflow_id,
+                updated_last_run_time,
+            )
+
+        else:
+            logger.info(f"No rules to execute for sensor_type : {sensor_type}")
+
+    except Exception as e:
+        logger.error(f"Error in rule_engine : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def main():
+    try:
+        # Job Parameters
+        sensor_type = get_task_env("sensor_type")
+        topic_name = get_task_env("topic_name")
+        delay = int(get_task_env("delay"))
+        engine_run_frequency = int(get_task_env("engine_run_frequency"))
+        downtime_seconds = int(get_task_env("downtime_seconds"))
+        scope = get_task_env("scope")
+
+        job_start_timestamp = datetime.now()
+        app_name = f"{sensor_type}_rule_execution"
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+        logger = configure_logger(app_name, date)
+
+        # Environment Variables
+        logger.info("Fetch values from catalog & storage_host environment variables...")
+        servicebus_namespace = os.getenv("servicebus_namespace")
+        catalog = os.getenv("catalog")
+        storage_host = os.getenv("storage_host")
+
+        logger.info("Fetch job id, run id and task id...")
+        workflow_id, run_id, task_id = get_job_and_run_id()
+        logger.info(
+            f"Value of Job ID: {workflow_id} | Run ID: {run_id} | Task ID: {task_id}"
+        )
+
+        spark = get_spark_context()
+
+        fully_qualified_namespace = f"{servicebus_namespace}.servicebus.windows.net"
+        table_name = get_table_name(catalog, "bronze_zone", RULES_TABLE_NAME)
+        run_time_table_name = get_table_name(
+            catalog, "bronze_zone", "rule_execution_run_time"
+        )
+
+        logger.info(f"Starting {app_name} | workflow id : {workflow_id}")
+
+        execute(
+            spark,
+            logger,
+            catalog,
+            table_name,
+            sensor_type,
+            delay,
+            engine_run_frequency,
+            topic_name,
+            fully_qualified_namespace,
+            scope,
+            run_time_table_name,
+            workflow_id,
+            downtime_seconds,
+        )
+    except Exception as e:
+        raise
+    finally:
+        move_file(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"{storage_host}/logs/{app_name}/{app_name}_{date}.log",
+            LOG_FILE_TYPE,
+        )
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    main()  # pragma no cover
