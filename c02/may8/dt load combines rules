@@ -1,0 +1,210 @@
+# Databricks notebook source
+from datetime import datetime
+from delta.tables import DeltaTable
+from pyspark.sql.functions import (
+   col, collect_list, row_number, current_timestamp, count, expr, monotonically_increasing_id
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+from itertools import product
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+# COMMAND ----------
+
+# Load rules table
+rules_df = spark.read.table("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.rules")
+
+# COMMAND ----------
+
+rules_df.display()
+
+# COMMAND ----------
+
+# Step 2: Filter only multi-condition rule IDs
+multi_condition_rule_ids_df = rules_df.groupBy("rule_id") \
+   .agg(count("*").alias("condition_count")) \
+   .filter("condition_count > 1") \
+   .select("rule_id")
+
+# COMMAND ----------
+
+multi_condition_rule_ids_df.display()
+
+# COMMAND ----------
+
+# Step 3: Extract relevant rules and deduplicate (by sensor_type + asset_id + query)
+multi_condition_rules_df = rules_df.join(multi_condition_rule_ids_df, on="rule_id", how="inner") \
+   .dropDuplicates(["rule_id", "sensor_type", "asset_id", "query"])
+
+# COMMAND ----------
+
+multi_condition_rules_df.display()
+
+# COMMAND ----------
+
+# Step 4: Group queries for each sensor_type-asset_id combination
+grouped_df = multi_condition_rules_df.groupBy("rule_id", "sensor_type", "asset_id") \
+   .agg(collect_list("query").alias("queries"))
+
+# COMMAND ----------
+
+grouped_df.display()
+
+# COMMAND ----------
+
+# Step 5: Convert to Pandas for cross-product combination logic
+pandas_df = grouped_df.toPandas()
+
+# COMMAND ----------
+
+from itertools import product
+
+results = []
+for rule_id in pandas_df["rule_id"].unique():
+   subset = pandas_df[pandas_df["rule_id"] == rule_id]
+   query_map = {}
+   for _, row in subset.iterrows():
+       key = f"{row['sensor_type']}__{row['asset_id']}"
+       query_map.setdefault(key, []).extend(row["queries"])
+   for combo in product(*query_map.values()):
+       cleaned = []
+       for q in combo:
+           q = q.strip()
+           if "end_time" not in q.lower():
+               wrapped_query = f"SELECT start_time, NULL AS end_time FROM ({q})"
+           else:
+               wrapped_query = f"SELECT start_time, end_time FROM ({q})"
+           cleaned.append(wrapped_query)
+       combined_query = " INTERSECT ".join(cleaned)
+       results.append((int(rule_id), combined_query))
+
+
+# COMMAND ----------
+
+# Step 6: Create DataFrame from combinations
+import numpy as np
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+
+# Convert numpy.int32 to standard Python int
+converted_results = [(int(row[0]), row[1]) for row in results]
+
+schema = StructType([
+   StructField("rule_id", IntegerType(), True),
+   StructField("combined_query", StringType(), True),
+])
+combo_df = spark.createDataFrame(results, schema)
+
+# COMMAND ----------
+
+combo_df.display()
+
+# COMMAND ----------
+
+# Step 7: Add group_id and timestamp
+window_spec = Window.partitionBy("rule_id").orderBy(monotonically_increasing_id())
+combo_df = combo_df.withColumn("group_id", row_number().over(window_spec)) \
+                  .withColumn("combined_query_updated_dte", current_timestamp())
+
+# COMMAND ----------
+
+# Step 8: Expand each combined query to all asset_id + condition_id for that rule
+condition_keys_df = rules_df.select("rule_id", "condition_id", "asset_id").distinct()
+final_combined_df = condition_keys_df.join(combo_df, on="rule_id", how="inner")
+
+# COMMAND ----------
+
+final_combined_df.display()
+
+# COMMAND ----------
+
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number
+
+# Define a window specification
+window_spec = Window.partitionBy("rule_id", "condition_id", "asset_id").orderBy("combined_query_updated_dte")
+
+# Add a row number to each row within the window
+final_combined_df = final_combined_df.withColumn("row_num", row_number().over(window_spec))
+
+# COMMAND ----------
+
+final_combined_df.display()
+
+# COMMAND ----------
+
+from pyspark.sql.functions import explode
+rules_exploded = rules_df.withColumn("asset", explode(col("asset_id")))
+final_exploded = final_combined_df.withColumn("asset", explode(col("asset_id")))
+
+# COMMAND ----------
+
+matched_df = rules_exploded.alias("base").join(
+   final_exploded.alias("combo"),
+   (col("base.rule_id") == col("combo.rule_id")) &
+   (col("base.condition_id") == col("combo.condition_id")) &
+   (col("base.asset") == col("combo.asset")),
+   how="left"
+)
+
+# COMMAND ----------
+
+matched_df.display()
+
+# COMMAND ----------
+
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number
+window_spec = Window.partitionBy("base.rule_id", "base.condition_id", "base.asset").orderBy("combo.group_id")
+deduped_df = matched_df.withColumn("rn", row_number().over(window_spec))
+#.filter(col("rn") == 1)
+
+# COMMAND ----------
+
+deduped_df.display()
+
+# COMMAND ----------
+
+from pyspark.sql.functions import collect_set
+deduped_aggregated = deduped_df.groupBy("base.rule_id", "base.condition_id").agg(
+   collect_set("base.asset").alias("asset_id"),
+   expr("first(base.rule_name)").alias("rule_name"),
+   expr("first(base.parameter)").alias("parameter"),
+   expr("first(combo.combined_query)").alias("combined_query"),
+   expr("first(combo.group_id)").alias("group_id"),
+   expr("first(combo.combined_query_updated_dte)").alias("combined_query_updated_date")
+   # Include any other fields from base as needed
+)
+
+# COMMAND ----------
+
+deduped_aggregated.display()
+
+# COMMAND ----------
+
+from delta.tables import DeltaTable
+rules_table = DeltaTable.forName(spark, "`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.rules")
+rules_table.alias("target").merge(
+   deduped_aggregated.alias("source"),
+   "target.rule_id = source.rule_id AND target.condition_id = source.condition_id"
+).whenMatchedUpdate(set={
+   "combined_query": "source.combined_query",
+   "group_id": "source.group_id",
+   "combined_query_updated_date": "source.combined_query_updated_date"
+}).execute()
+
+# COMMAND ----------
