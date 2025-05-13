@@ -74,27 +74,45 @@ grouped_df.display()
 
 # COMMAND ----------
 
+join_condition_map = rules_df.select("rule_id", "join_condition") \
+   .distinct() \
+   .rdd.collectAsMap()  # dict: {rule_id: "and" / "or"}
+
+# COMMAND ----------
+
+display(join_condition_map)
+
+# COMMAND ----------
+
 pandas_df = grouped_df.toPandas()
+
+# COMMAND ----------
+
+# Prepare dictionary with join_condition per rule_id
 results = []
 for rule_id in pandas_df["rule_id"].unique():
    subset = pandas_df[pandas_df["rule_id"] == rule_id]
-   query_groups = {}
+   query_map = {}
    for _, row in subset.iterrows():
-       sensor_key = f"{row['sensor_type']}|{','.join(row['asset_id_exploded']) if isinstance(row['asset_id_exploded'], list) else row['asset_id_exploded']}"
-       query_groups.setdefault(sensor_key, []).extend(row["queries"])
-   value_lists = list(query_groups.values())
+       key = (row["sensor_type"], row["asset_id_exploded"])
+       query_map[key] = row["queries"]
+   # Fetch the appropriate logical operator
+   join_condition = join_condition_map.get(int(rule_id), "and").lower()
+   logical_op = "INTERSECT" if join_condition == "and" else "UNION ALL"
+   value_lists = list(query_map.values())
    for combo in product(*value_lists):
-       wrapped_queries = []
+       cleaned_combo = []
        for q in combo:
            q = q.strip()
-           q_lower = q.lower()
-           if q_lower.startswith("with"):
-               wrapped_queries.append(f"SELECT start_time, end_time FROM ({q})")
-           elif "end_time" not in q_lower.split("from")[0]:
-               wrapped_queries.append(f"SELECT start_time, '' AS end_time FROM ({q})")
+           if q.lower().startswith("with") or "select" in q.lower():
+               if "end_time" not in q.lower().split("from")[0]:
+                   q_wrapped = f"SELECT start_time, '' AS end_time FROM ({q})"
+               else:
+                   q_wrapped = f"SELECT start_time, end_time FROM ({q})"
            else:
-               wrapped_queries.append(q)
-       combined_query = " INTERSECT ".join(wrapped_queries)
+               q_wrapped = f"SELECT start_time, '' AS end_time FROM ({q})"
+           cleaned_combo.append(q_wrapped)
+       combined_query = f" {logical_op} ".join(cleaned_combo)
        results.append((int(rule_id), combined_query))
 
 # COMMAND ----------
@@ -118,10 +136,9 @@ combo_df.display()
 
 # COMMAND ----------
 
-# Step 7: Add group_id and timestamp
 window_spec = Window.partitionBy("rule_id").orderBy(monotonically_increasing_id())
 combo_df = combo_df.withColumn("group_id", row_number().over(window_spec)) \
-                  .withColumn("combined_query_updated_dte", current_timestamp())
+                   .withColumn("combined_query_updated_date", current_timestamp())
 
 # COMMAND ----------
 
@@ -135,26 +152,37 @@ final_combined_df = condition_keys_df.join(combo_df, on="rule_id", how="inner")
 
 # COMMAND ----------
 
-final_combined_df.display()
-
-# COMMAND ----------
-
-from pyspark.sql.window import Window
-from pyspark.sql.functions import row_number
-
-# Define a window specification
-window_spec = Window.partitionBy("rule_id", "condition_id", "asset_id").orderBy("combined_query_updated_dte")
-
-# Add a row number to each row within the window
+window_spec = Window.partitionBy("rule_id", "condition_id", "asset_id").orderBy("combined_query_updated_date")
 final_combined_df = final_combined_df.withColumn("row_num", row_number().over(window_spec))
 
 # COMMAND ----------
 
+last_condition_df = rules_df.groupBy("rule_id").agg(expr("max(condition_id)").alias("last_condition_id"))
+final_combined_df = final_combined_df.join(last_condition_df, on="rule_id", how="left")
+
+# COMMAND ----------
+
 final_combined_df.display()
 
 # COMMAND ----------
 
+filtered_combined_df = final_combined_df.filter(
+   (col("row_num") == 1) | (col("condition_id") == col("last_condition_id"))
+)
 
+#.drop("row_num", "last_condition_id", "asset_id")
 
 # COMMAND ----------
 
+filtered_combined_df.select(
+    "rule_id", 
+    "condition_id", 
+    "group_id", 
+    "combined_query", 
+    col("combined_query_updated_date").alias("last_updated_date")
+).write.mode("overwrite").saveAsTable("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.combined_rules")
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT * FROM `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.combined_rules
