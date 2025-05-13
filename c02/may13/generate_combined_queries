@@ -1,0 +1,34 @@
+def generate_combined_queries(grouped_df, rules_df):
+    join_condition_map = rules_df.select("rule_id", "join_condition") \
+                                 .distinct() \
+                                 .rdd.collectAsMap()
+    pandas_df = grouped_df.toPandas()
+    results = []
+    for rule_id in pandas_df["rule_id"].unique():
+        subset = pandas_df[pandas_df["rule_id"] == rule_id]
+        query_map = {
+            (row["sensor_type"], row["asset_id_exploded"]): row["queries"]
+            for _, row in subset.iterrows()
+        }
+        join_condition = join_condition_map.get(int(rule_id), "and").lower()
+        logical_op = "INTERSECT" if join_condition == "and" else "UNION ALL"
+        value_lists = list(query_map.values())
+        for combo in product(*value_lists):
+            cleaned_combo = []
+            for q in combo:
+                q = q.strip()
+                if "with" in q.lower() or "select" in q.lower():
+                    q_wrapped = (
+                        f"SELECT start_time, '' AS end_time FROM ({q})"
+                        if "end_time" not in q.lower().split("from")[0]
+                        else f"SELECT start_time, end_time FROM ({q})"
+                    )
+                else:
+                    q_wrapped = f"SELECT start_time, '' AS end_time FROM ({q})"
+                cleaned_combo.append(q_wrapped)
+            combined_query = f" {logical_op} ".join(cleaned_combo)
+            results.append((int(rule_id), combined_query))
+    return spark.createDataFrame(results, schema=StructType([
+        StructField("rule_id", IntegerType(), True),
+        StructField("combined_query", StringType(), True)
+    ]))
