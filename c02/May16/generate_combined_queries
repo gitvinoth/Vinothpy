@@ -1,0 +1,37 @@
+def generate_combined_queries(grouped_df, rules_df):
+   # Prepare join_condition map
+   join_condition_df = rules_df.select("rule_id", "join_condition").distinct()
+   # Join grouped queries with join_condition
+   enriched_df = grouped_df.join(join_condition_df, on="rule_id", how="left")
+   # Convert to RDD grouped by rule_id
+   grouped_rdd = enriched_df.rdd \
+       .map(lambda row: (
+           row.rule_id,
+           row.join_condition,
+           (row.sensor_type, row.asset_id_exploded, row.queries)
+       )) \
+       .groupBy(lambda x: x[0])  # group by rule_id
+   def process_rule_group(group):
+       rule_id, records = group
+       records = list(records)
+       join_condition = records[0][1] or "and"
+       logical_op = "UNION ALL"
+       #logical_op = "INTERSECT" if join_condition.lower() == "and" else "UNION ALL"
+       # query_map: { (sensor_type, asset_id): [query, ...] }
+       query_map = {(sensor_type, asset_id): queries for _, _, (sensor_type, asset_id, queries) in records}
+       value_lists = list(query_map.values())
+       for combo in product(*value_lists):
+           cleaned_combo = []
+           for q in combo:
+               q = q.strip()
+               if query_has_end_time(q):
+                   q_wrapped = f"SELECT start_time, end_time FROM ({q})"
+               else:
+                   q_wrapped = f"SELECT start_time, '' AS end_time FROM ({q})"
+               cleaned_combo.append(q_wrapped)
+           combined_query = f" {logical_op} ".join(cleaned_combo)
+           yield Row(rule_id=int(rule_id), combined_query=combined_query)
+   # Apply flatMap
+   results_rdd = grouped_rdd.flatMap(process_rule_group)
+   # Convert back to DataFrame
+   return spark.createDataFrame(results_rdd)
