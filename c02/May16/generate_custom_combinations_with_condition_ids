@@ -1,0 +1,39 @@
+def generate_custom_combinations_with_condition_ids(grouped_df):
+   def powerset_with_min_2(elements):
+       return [list(combo) for i in range(2, len(elements)+1) for combo in combinations(elements, i)]
+   def process_rule_group(group):
+       rule_id, rows = group
+       query_map = []
+       for row in rows:
+           key = (row.sensor_type, row.asset_id, row.condition_id)
+           for q in row.queries:
+               query_map.append((key, q.strip()))
+       all_sets = powerset_with_min_2(query_map)
+       for group_id, subset in enumerate(all_sets, start=1):
+           queries = []
+           condition_ids = set()
+           for (sensor_type, asset_id, cond_id), q in subset:
+               condition_ids.add(cond_id)
+               q_wrapped = (
+                   f"SELECT start_time, end_time FROM ({q})"
+                   if query_has_end_time(q)
+                   else f"SELECT start_time, '' AS end_time FROM ({q})"
+               )
+               queries.append(q_wrapped)
+           combined_query = " UNION ALL ".join(queries)
+           yield Row(
+               rule_id=int(rule_id),
+               group_id=group_id,
+               combined_query=combined_query,
+               condition_ids=sorted(list(condition_ids))
+           )
+   grouped_rdd = grouped_df.rdd.map(lambda row: (
+       row.rule_id,
+       Row(sensor_type=row.sensor_type, asset_id=row.asset_id, condition_id=row.condition_id, queries=row.queries)
+   )).groupByKey()
+   return spark.createDataFrame(grouped_rdd.flatMap(process_rule_group), schema=StructType([
+       StructField("rule_id", IntegerType(), True),
+       StructField("group_id", IntegerType(), True),
+       StructField("combined_query", StringType(), True),
+       StructField("condition_ids", ArrayType(IntegerType()), True)
+   ]))
