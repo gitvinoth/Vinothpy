@@ -53,22 +53,26 @@ def query_has_end_time(sql: str) -> bool:
 
 # COMMAND ----------
 
-def generate_and_combined_queries(grouped_df):
-   def powerset_with_min_2(elements):
-       return [list(combo) for i in range(2, len(elements)+1) for combo in combinations(elements, i)]
+def generate_or_combined_queries(grouped_df):
    def process_rule_group(group):
        rule_id, rows = group
-       query_map = []
+       query_units = []  # [(sensor_type, asset_id, condition_id, query)]
+       all_condition_ids = set()
        for row in rows:
-           key = (row.sensor_type, row.asset_id, row.condition_id)
            for q in row.queries:
-               query_map.append((key, q.strip()))
-       all_sets = powerset_with_min_2(query_map)
-       for group_id, subset in enumerate(all_sets, start=1):
+               query_units.append((row.sensor_type, row.asset_id, row.condition_id, q.strip()))
+               all_condition_ids.add(row.condition_id)
+       all_condition_ids = sorted(list(all_condition_ids))
+       required_count = len(all_condition_ids)
+       group_id = 1
+       # Go through all combinations of N items where N = number of conditions
+       for subset in combinations(query_units, required_count):
+           condition_ids = sorted(set(c_id for (_, _, c_id, _) in subset))
+           # Only accept subsets that exactly match all condition_ids
+           if condition_ids != all_condition_ids:
+               continue
            queries = []
-           condition_ids = set()
-           for (sensor_type, asset_id, cond_id), q in subset:
-               condition_ids.add(cond_id)
+           for (_, _, _, q) in subset:
                q_wrapped = (
                    f"SELECT start_time, end_time FROM ({q})"
                    if query_has_end_time(q)
@@ -80,22 +84,26 @@ def generate_and_combined_queries(grouped_df):
                rule_id=int(rule_id),
                group_id=group_id,
                combined_query=combined_query,
-               condition_ids=sorted(list(condition_ids))
+               condition_ids=condition_ids
            )
+           group_id += 1
    grouped_rdd = grouped_df.rdd.map(lambda row: (
        row.rule_id,
        Row(sensor_type=row.sensor_type, asset_id=row.asset_id, condition_id=row.condition_id, queries=row.queries)
    )).groupByKey()
-   return spark.createDataFrame(grouped_rdd.flatMap(process_rule_group), schema=StructType([
-       StructField("rule_id", IntegerType(), True),
-       StructField("group_id", IntegerType(), True),
-       StructField("combined_query", StringType(), True),
-       StructField("condition_ids", ArrayType(IntegerType()), True)
-   ]))
+   return spark.createDataFrame(
+       grouped_rdd.flatMap(process_rule_group),
+       schema=StructType([
+           StructField("rule_id", IntegerType(), True),
+           StructField("group_id", IntegerType(), True),
+           StructField("combined_query", StringType(), True),
+           StructField("condition_ids", ArrayType(IntegerType()), True)
+       ])
+   )
 
 # COMMAND ----------
 
-def generate_or_combined_queries(grouped_df, rules_df):
+def generate_and_combined_queries(grouped_df, rules_df):
    join_condition_df = rules_df.select("rule_id", "join_condition").distinct()
    enriched_df = grouped_df.join(join_condition_df, on="rule_id", how="left")
    grouped_rdd = enriched_df.rdd \
@@ -109,8 +117,7 @@ def generate_or_combined_queries(grouped_df, rules_df):
        rule_id, records = group
        records = list(records)
        join_condition = (records[0][1] or "and").lower()
-       #if join_condition != "or":
-        #   return  # skip if not 'or'
+
        query_map = {}
        for _, _, (sensor_type, asset_id, condition_id, queries) in records:
            query_map[(sensor_type, asset_id, condition_id)] = queries
@@ -166,9 +173,9 @@ def main(spark, logger):
             .otherwise(lower(col("join_condition")))
         )
 
-        rules_and_df = rules_df.withColumn("asset_id_exploded", explode(col("asset_id"))).filter(lower(col("join_condition")) == "or")
+        rules_or_df = rules_df.withColumn("asset_id_exploded", explode(col("asset_id"))).filter(lower(col("join_condition")) == "or")
         logger.info("Grouping queries by sensor_type, asset_id, condition_id, join_condition...")
-        enriched_and_df = rules_and_df.select(
+        enriched_or_df = rules_or_df.select(
             "rule_id", 
             "sensor_type", 
             "asset_id", 
@@ -186,10 +193,10 @@ def main(spark, logger):
         )
 
         logger.info("Generating custom logic based combined queries...")
-        combo_and_df = generate_and_combined_queries(enriched_and_df).withColumn("join_condition",lit("or"))
+        combo_or_df = generate_or_combined_queries(enriched_or_df).withColumn("join_condition",lit("or"))
 
-        rules_or_df = rules_df.withColumn("asset_id_exploded", explode(col("asset_id"))).filter(lower(col("join_condition")) == "and")
-        enriched_or_df = rules_or_df.select(
+        rules_and_df = rules_df.withColumn("asset_id_exploded", explode(col("asset_id"))).filter(lower(col("join_condition")) == "and")
+        enriched_and_df = rules_and_df.select(
             "rule_id", 
             "sensor_type", 
             "asset_id_exploded", 
@@ -206,7 +213,7 @@ def main(spark, logger):
             collect_list("query").alias("queries")
         )
 
-        combo_or_df = generate_or_combined_queries(enriched_or_df,rules_or_df).withColumn("join_condition",lit("and"))
+        combo_and_df = generate_and_combined_queries(enriched_and_df,rules_and_df).withColumn("join_condition",lit("and"))
 
         logger.info("Merging AND and OR combined queries in single df.")
         merged_combo_df = combo_and_df.union(combo_or_df)
