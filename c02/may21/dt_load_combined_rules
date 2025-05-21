@@ -1,0 +1,238 @@
+# Databricks notebook source
+import os
+import logging
+import re
+import time
+from datetime import datetime
+from itertools import product,combinations, permutations
+from collections import defaultdict
+from math import factorial
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.functions import (
+   col,lower, when, count, expr, collect_list, row_number,
+   current_timestamp, monotonically_increasing_id, explode
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import ArrayType, IntegerType, StructType, StructField, StringType
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass  # pragma: no cover
+except NameError:
+    from src.utils.read_utility import read_json, read_delta_table, read_table
+    from src.utils.write_utility import write_table
+    from src.utils.on_premise.utility_functions import get_spark_context,get_task_env,get_table_name
+
+# COMMAND ----------
+
+def query_has_end_time(sql: str) -> bool:
+   sql_clean = re.sub(r"--.*", "", sql, flags=re.MULTILINE).strip()
+   select_parts = re.findall(r"select\s+(.*?)\s+from", sql_clean, flags=re.IGNORECASE | re.DOTALL)
+   for part in select_parts:
+       if "end_time" in part.lower():
+           return True
+   return False
+
+# COMMAND ----------
+
+def generate_and_combined_queries(grouped_df):
+   def powerset_with_min_2(elements):
+       return [list(combo) for i in range(2, len(elements)+1) for combo in combinations(elements, i)]
+   def process_rule_group(group):
+       rule_id, rows = group
+       query_map = []
+       for row in rows:
+           key = (row.sensor_type, row.asset_id, row.condition_id)
+           for q in row.queries:
+               query_map.append((key, q.strip()))
+       all_sets = powerset_with_min_2(query_map)
+       for group_id, subset in enumerate(all_sets, start=1):
+           queries = []
+           condition_ids = set()
+           for (sensor_type, asset_id, cond_id), q in subset:
+               condition_ids.add(cond_id)
+               q_wrapped = (
+                   f"SELECT start_time, end_time FROM ({q})"
+                   if query_has_end_time(q)
+                   else f"SELECT start_time, '' AS end_time FROM ({q})"
+               )
+               queries.append(q_wrapped)
+           combined_query = " INTERSECT ".join(queries)
+           yield Row(
+               rule_id=int(rule_id),
+               group_id=group_id,
+               combined_query=combined_query,
+               condition_ids=sorted(list(condition_ids))
+           )
+   grouped_rdd = grouped_df.rdd.map(lambda row: (
+       row.rule_id,
+       Row(sensor_type=row.sensor_type, asset_id=row.asset_id, condition_id=row.condition_id, queries=row.queries)
+   )).groupByKey()
+   return spark.createDataFrame(grouped_rdd.flatMap(process_rule_group), schema=StructType([
+       StructField("rule_id", IntegerType(), True),
+       StructField("group_id", IntegerType(), True),
+       StructField("combined_query", StringType(), True),
+       StructField("condition_ids", ArrayType(IntegerType()), True)
+   ]))
+
+# COMMAND ----------
+
+def generate_or_combined_queries(grouped_df, rules_df):
+   join_condition_df = rules_df.select("rule_id", "join_condition").distinct()
+   enriched_df = grouped_df.join(join_condition_df, on="rule_id", how="left")
+   grouped_rdd = enriched_df.rdd \
+       .map(lambda row: (
+           row.rule_id,
+           row.join_condition,
+           (row.sensor_type, row.asset_id_exploded, row.condition_id, row.queries)
+       )) \
+       .groupBy(lambda x: x[0])  # group by rule_id
+   def process_rule_group(group):
+       rule_id, records = group
+       records = list(records)
+       join_condition = (records[0][1] or "and").lower()
+       #if join_condition != "or":
+        #   return  # skip if not 'or'
+       query_map = {}
+       for _, _, (sensor_type, asset_id, condition_id, queries) in records:
+           query_map[(sensor_type, asset_id, condition_id)] = queries
+       value_lists = list(query_map.values())
+       group_id = 1
+       for combo in product(*value_lists):
+           cleaned_combo = []
+           condition_ids = set()
+           for q in combo:
+               q = q.strip()
+               if query_has_end_time(q):
+                   q_wrapped = f"SELECT start_time, end_time FROM ({q})"
+               else:
+                   q_wrapped = f"SELECT start_time, '' AS end_time FROM ({q})"
+               cleaned_combo.append(q_wrapped)
+           # collect all condition_ids involved in this combo
+           for key in query_map.keys():
+               condition_ids.add(key[2])
+           combined_query = " INTERSECT ".join(cleaned_combo)
+           yield Row(
+               rule_id=int(rule_id),
+               group_id=int(group_id),
+               combined_query=combined_query,
+               condition_ids=sorted(list(condition_ids))
+           )
+           group_id += 1
+   results_rdd = grouped_rdd.flatMap(process_rule_group)
+   return spark.createDataFrame(
+       results_rdd,
+       schema=StructType([
+           StructField("rule_id", IntegerType(), True),
+           StructField("group_id", IntegerType(), True),
+           StructField("combined_query", StringType(), True),
+           StructField("condition_ids", ArrayType(IntegerType()), True)
+       ])
+   )
+
+# COMMAND ----------
+
+def main(spark, logger):
+    try:
+        logger.info("Loading environment variables...")
+        catalog = os.getenv("catalog")
+
+        bronze_table_name = get_table_name(catalog, "bronze_zone", "rules")
+        combined_rules_table_name = get_table_name(catalog, "bronze_zone", "combined_rules")
+
+        logger.info(f"Reading rules from: {bronze_table_name}")
+        rules_df = read_table(spark, logger, bronze_table_name)
+        rules_df = rules_df.withColumn(
+            "join_condition",
+            when(col("join_condition").isNull() | (lower(col("join_condition")) == ""), "or")
+            .otherwise(lower(col("join_condition")))
+        )
+
+        rules_and_df = rules_df.withColumn("asset_id_exploded", explode(col("asset_id"))).filter(lower(col("join_condition")) == "or")
+        logger.info("Grouping queries by sensor_type, asset_id, condition_id, join_condition...")
+        enriched_and_df = rules_and_df.select(
+            "rule_id", 
+            "sensor_type", 
+            "asset_id", 
+            "condition_id", 
+            "query", 
+            "join_condition"
+        ).dropDuplicates().groupBy(
+            "rule_id", 
+            "sensor_type", 
+            "asset_id", 
+            "condition_id", 
+            "join_condition"
+        ).agg(
+            collect_list("query").alias("queries")
+        )
+
+        logger.info("Generating custom logic based combined queries...")
+        combo_and_df = generate_and_combined_queries(enriched_and_df).withColumn("join_condition",lit("or"))
+
+        rules_or_df = rules_df.withColumn("asset_id_exploded", explode(col("asset_id"))).filter(lower(col("join_condition")) == "and")
+        enriched_or_df = rules_or_df.select(
+            "rule_id", 
+            "sensor_type", 
+            "asset_id_exploded", 
+            "condition_id", 
+            "query", 
+            "join_condition"
+        ).dropDuplicates().groupBy(
+            "rule_id", 
+            "sensor_type", 
+            "asset_id_exploded", 
+            "condition_id", 
+            "join_condition"
+        ).agg(
+            collect_list("query").alias("queries")
+        )
+
+        combo_or_df = generate_or_combined_queries(enriched_or_df,rules_or_df).withColumn("join_condition",lit("and"))
+
+        logger.info("Merging AND and OR combined queries in single df.")
+        merged_combo_df = combo_and_df.union(combo_or_df)
+
+        logger.info("Assigning timestamps to each row...")
+        final_df = merged_combo_df.withColumn("combined_query_updated_date", current_timestamp())
+        final_df = final_df.select(
+            "rule_id", 
+            col("condition_ids").alias("condition_id"), 
+            "join_condition",
+            col("group_id").alias("combination_id"), 
+            "combined_query", 
+            col("combined_query_updated_date").alias("last_updated_date")
+        )
+
+        logger.info(f"Writing output to: {combined_rules_table_name}")
+        write_table(logger, final_df, "overwrite", combined_rules_table_name)
+
+    except Exception as e:
+        logger.error(f"Error in main(): {str(e)}")
+        raise
+
+# COMMAND ----------
+
+app_name = "combined_rules_custom_logic"
+job_start_timestamp = datetime.now()
+date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+logger = configure_logger(app_name, date)
+main(spark, logger)
