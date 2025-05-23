@@ -1,0 +1,119 @@
+Ptgauge - silver
+col_name	data_type	comment
+epoch_timestamp	bigint	null
+device_id	string	null
+asset_id	string	null
+pressure	double	null
+temperature	double	null
+source	string	null
+signal_strength	double	null
+last_updated_date	timestamp	null
+
+Ptgauge - gold_summary
+col_name	data_type	comment
+epoch_timestamp	bigint	null
+asset_id	string	null
+min_pressure_epoch_timestamp	bigint	null
+min_pressure	double	null
+max_pressure_epoch_timestamp	bigint	null
+max_pressure	double	null
+min_temperature_epoch_timestamp	bigint	null
+min_temperature	double	null
+max_temperature_epoch_timestamp	bigint	null
+max_temperature	double	null
+
+
+
+Same way das - silver
+col_name	data_type	comment
+device_id	string	null
+asset_id	string	null
+time	bigint	null
+data	array<double>	null
+depth	array<int>	null
+freq_band	string	null
+last_updated_date	timestamp	null
+# Partition Information		
+# col_name	data_type	comment
+freq_band	string	null
+
+das- gold summary
+table - measurement - das-86400
+columns
+das_min_timestamp
+das_max_timestamp
+start_of_day_timestamp
+start_of_day_timestamp
+das_min
+das_max
+das_sum
+das_count
+
+
+Same way dts- Silver
+col_name	data_type	comment
+asset_id	string	null
+timestamp	bigint	null
+temperature	double	null
+depth	int	null
+last_updated_date	timestamp	null
+
+dts - gold summary
+table - dts-3600 (summarize per hour)
+columns
+
+asset_id
+dts_sum
+dts_count
+start_of_day_timestamp
+start_of_day_timestamp
+
+
+
+
+
+---------------------------------------------
+
+rules
+
+col_name	data_type	comment
+rule_id	int	null
+rule_name	string	null
+tenant_id	string	null
+condition_id	int	null
+condition_name	string	null
+asset_id	array<string>	null
+join_condition	string	null
+parameter	string	null
+operator	string	null
+class	int	null
+threshold	double	null
+duration	int	null
+wire	string	null
+function	string	null
+wire_length_from	int	null
+wire_length_to	int	null
+rule_run_frequency	int	null
+max_data_frequency	int	null
+sensor_type	string	null
+severity	string	null
+risk_register_controls	array<int>	null
+baseline_time	int	null
+threshold_unit	string	null
+window_slide_duration	int	null
+query	string	null
+last_updated_date	timestamp	null
+
+
+
+
+combined_rules
+
+col_name	data_type	comment
+rule_id	int	null
+condition_id	array<int>	null
+asset_id	array<string>	null
+join_condition	string	null
+combination_id	int	null
+combined_query	string	null
+last_updated_date	timestamp	null
