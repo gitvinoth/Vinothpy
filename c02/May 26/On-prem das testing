@@ -1,0 +1,56 @@
+!pip install lasio
+
+!pip install retrying
+
+!pip install delta-spark
+
+!pip install minio 
+
+!pip install azure-identity
+
+!pip install aiohttp
+
+ import os
+os.environ["s3_endpoint"] = "minio:9000"
+os.environ["s3_accesskey"] = "yLu8bkZ5Ag0ZTK6EonIQ"
+os.environ["s3_secret"] = "ZwfpPUVNjdGoOjmUBqdG4riRtmw9QwK9TxKcuj1N"
+ 
+os.environ["source_data_type"] = "das"
+os.environ["workflow_name"] = "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_well_etl"
+os.environ["task_name"] = "das_bronze_well_01"
+os.environ["workflow_id"] = "5"
+os.environ["task_id"] = "1"
+os.environ["run_id"] = "1234"
+os.environ["storage_host"] = "ccus-dd40badc-44a8-4c24-994a-ab80edc83478"
+os.environ["catalog"] = ""
+os.environ["source_well_name"] = "well_1"
+os.environ["source"] = "ips"
+os.environ["spark_master"] = "spark://spark-master-svc:7077"
+os.environ["executor_memory"] = "2g"
+os.environ["executor_cores"] = "1"
+#os.environ["task_name"] = "cw_plume_bronze"
+
+os.environ["delay"] = "1800"
+os.environ["sensor_type"] = "das"
+os.environ["topic_name"] = "ccus-qa-dna-03"
+#os.environ["scope"] = "cordant_azure_service_bus"
+os.environ["downtime_seconds"] = "7200"
+os.environ["engine_run_frequency"] = "1800"
+os.environ["data_frequency"] = "1"
+
+
+%run -i 'src/etl/dt_publish_das.py'
+
+Registered pool instance for 'ccus-default' (Total: 1)
+Registered pool instance for 'ccus-default' (Total: 2)
+Registered pool instance for 'ccus-default' (Total: 3)
+Registered pool instance for 'ccus-default' (Total: 4)
+Registered pool instance for 'ccus-default' (Total: 5)
+Current instances for 'ccus-default':
+ Instance 1: ID 140524613467392
+ Instance 2: ID 140524611641712
+ Instance 3: ID 140524611634512
+ Instance 4: ID 140524611638688
+ Instance 5: ID 140524611644784
+Max instances reached for 'ccus-default'. No new instance created.
+ 
