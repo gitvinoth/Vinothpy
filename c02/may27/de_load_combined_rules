@@ -1,0 +1,403 @@
+# Databricks notebook source
+import os
+import logging
+import re
+import time
+from datetime import datetime
+from delta.tables import DeltaTable
+from itertools import product,combinations, permutations
+from collections import defaultdict
+from math import factorial
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.functions import (
+   col,lower, when, count, expr, collect_list, row_number,
+   current_timestamp, monotonically_increasing_id, explode, lit, first, collect_list, flatten, size, array_distinct, max
+)
+from pyspark.sql.window import Window
+from pyspark.sql.types import ArrayType, IntegerType, StructType, StructField, StringType, DoubleType
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass  # pragma: no cover
+except NameError:
+    from src.utils.read_utility import read_json, read_delta_table, read_table
+    from src.utils.write_utility import write_table
+    from src.utils.on_premise.utility_functions import get_spark_context,get_task_env,get_table_name
+
+# COMMAND ----------
+
+def get_rules_json_df(spark, logger, source_file_list):
+    
+    # This function reads the data from the json file list and returns a dataframe.
+    
+    try:
+        logger.info(f"Reading the source files : {source_file_list}")
+        conditions_schema = StructType([
+    StructField("condition_id", IntegerType(), True),
+    StructField("condition_name", StringType(), True),
+    StructField("asset_id", ArrayType(StringType()), True),
+    StructField("parameter", StringType(), True),
+    StructField("operator", StringType(), True),
+    StructField("class", IntegerType(), True),
+    StructField("threshold", DoubleType(), True),
+    StructField("duration", IntegerType(), True),
+    StructField("rule_run_frequency", IntegerType(), True),
+    StructField("sensor_type", StringType(), True),
+    StructField("severity", StringType(), True),
+    StructField("risk_register_controls", ArrayType(IntegerType()), True)])
+
+        schema = StructType(
+            [
+                StructField("rule_id", IntegerType()),
+                StructField("rule_name", StringType(), True),
+                StructField("tenant_id", StringType(), True),
+                StructField("join_condition", StringType(), True),
+                StructField("conditions", ArrayType(conditions_schema), True),
+                StructField("operation", StringType(), True),
+            ]
+        )
+
+        rules_json_df = read_json(spark, logger, source_file_list, schema).withColumn(
+            "input_file", input_file_name()
+        )
+
+        return rules_json_df
+
+    except Exception as e:
+        logger.error(f"Error in get_rules_json_df() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def pre_generative_checks(rules_df):
+   # Normalize join_condition
+   rules_df = rules_df.withColumn(
+       "join_condition",
+       when(col("join_condition").isNull() | (lower(col("join_condition")) == ""), "or")
+       .otherwise(lower(col("join_condition")))
+   )
+   # OR rules (use asset_id with explode)
+   rules_or_df = rules_df.withColumn("asset_id", explode(col("asset_id"))) \
+                         .filter(col("join_condition") == "or")
+   enriched_or_df = rules_or_df.select(
+       "rule_id", "sensor_type", "asset_id", "condition_id", "query", "join_condition"
+   ).dropDuplicates().groupBy(
+       "rule_id", "sensor_type", "asset_id", "condition_id", "join_condition"
+   ).agg(collect_list("query").alias("queries"))
+
+   # AND rules (explode asset_id to asset_id_exploded)
+   rules_and_df = rules_df.withColumn("asset_id_exploded", explode(col("asset_id"))) \
+                          .filter(col("join_condition") == "and")
+   enriched_and_df = rules_and_df.select(
+       "rule_id", "sensor_type", "asset_id_exploded", "condition_id", "query", "join_condition"
+   ).dropDuplicates().groupBy(
+       "rule_id", "sensor_type", "asset_id_exploded", "condition_id", "join_condition"
+   ).agg(collect_list("query").alias("queries"))
+   
+   return enriched_or_df, enriched_and_df, rules_and_df
+
+# COMMAND ----------
+
+def query_has_end_time(sql: str) -> bool:
+   sql_clean = re.sub(r"--.*", "", sql, flags=re.MULTILINE).strip()
+   select_parts = re.findall(r"select\s+(.*?)\s+from", sql_clean, flags=re.IGNORECASE | re.DOTALL)
+   for part in select_parts:
+       if "end_time" in part.lower():
+           return True
+   return False
+
+# COMMAND ----------
+
+def generate_or_combined_queries(grouped_df):
+   def process_rule_group(group):
+       rule_id, rows = group
+       query_units = []  # (sensor_type, asset_id, condition_id, query)
+       all_condition_ids = set()
+       for row in rows:
+           for q in row.queries:
+               query_units.append((row.sensor_type, row.asset_id, row.condition_id, q.strip()))
+               all_condition_ids.add(row.condition_id)
+       all_condition_ids = sorted(list(all_condition_ids))
+       required_count = len(all_condition_ids)
+       group_id = 1
+       for subset in combinations(query_units, required_count):
+           condition_ids = sorted(set(c_id for (_, _, c_id, _) in subset))
+           if condition_ids != all_condition_ids:
+               continue
+           asset_ids = sorted(set(asset_id for (_, asset_id, _, _) in subset))
+           queries = []
+           for (_, _, _, q) in subset:
+               q_wrapped = (
+                   f"SELECT start_time, end_time FROM ({q})"
+                   if query_has_end_time(q)
+                   else f"SELECT start_time, '' AS end_time FROM ({q})"
+               )
+               queries.append(q_wrapped)
+           combined_query = " INTERSECT ".join(queries)
+           yield Row(
+               rule_id=int(rule_id),
+               group_id=group_id,
+               combined_query=combined_query,
+               condition_ids=condition_ids,
+               asset_ids=asset_ids
+           )
+           group_id += 1
+   grouped_rdd = grouped_df.rdd.map(lambda row: (
+       row.rule_id,
+       Row(sensor_type=row.sensor_type, asset_id=row.asset_id, condition_id=row.condition_id, queries=row.queries)
+   )).groupByKey()
+   return spark.createDataFrame(
+       grouped_rdd.flatMap(process_rule_group),
+       schema=StructType([
+           StructField("rule_id", IntegerType(), True),
+           StructField("group_id", IntegerType(), True),
+           StructField("combined_query", StringType(), True),
+           StructField("condition_ids", ArrayType(IntegerType()), True),
+           StructField("asset_ids", ArrayType(StringType()), True)
+       ])
+   )
+
+# COMMAND ----------
+
+def generate_and_combined_queries(grouped_df, rules_df):
+   join_condition_df = rules_df.select("rule_id", "join_condition").distinct()
+   enriched_df = grouped_df.join(join_condition_df, on="rule_id", how="left")
+   grouped_rdd = enriched_df.rdd.map(lambda row: (
+       row.rule_id,
+       row.join_condition,
+       (row.sensor_type, row.asset_id_exploded, row.condition_id, row.queries)
+   )).groupBy(lambda x: x[0])
+   def process_rule_group(group):
+       rule_id, records = group
+       records = list(records)
+       join_condition = (records[0][1] or "and").lower()
+       query_map = {
+           (sensor_type, asset_id, condition_id): queries
+           for _, _, (sensor_type, asset_id, condition_id, queries) in records
+       }
+       value_lists = list(query_map.values())
+       group_id = 1
+       for combo in product(*value_lists):
+           cleaned_combo = []
+           condition_ids = set()
+           asset_ids = set()
+           for q in combo:
+               q = q.strip()
+               q_wrapped = (
+                   f"SELECT start_time, end_time FROM ({q})"
+                   if query_has_end_time(q)
+                   else f"SELECT start_time, '' AS end_time FROM ({q})"
+               )
+               cleaned_combo.append(q_wrapped)
+           for key in query_map.keys():
+               asset_ids.add(key[1])
+               condition_ids.add(key[2])
+           combined_query = " INTERSECT ".join(cleaned_combo)
+           yield Row(
+               rule_id=int(rule_id),
+               group_id=group_id,
+               combined_query=combined_query,
+               condition_ids=sorted(list(condition_ids)),
+               asset_ids=sorted(list(asset_ids))
+           )
+           group_id += 1
+   results_rdd = grouped_rdd.flatMap(process_rule_group)
+   return spark.createDataFrame(
+       results_rdd,
+       schema=StructType([
+           StructField("rule_id", IntegerType(), True),
+           StructField("group_id", IntegerType(), True),
+           StructField("combined_query", StringType(), True),
+           StructField("condition_ids", ArrayType(IntegerType()), True),
+           StructField("asset_ids", ArrayType(StringType()), True)
+       ])
+   )
+
+# COMMAND ----------
+
+def create_rules_header(spark, logger, rules_json_df, bronze_table_name, bronze_combined_rules_table, bronze_rules_header_table) -> None:
+    try:
+        """
+        Creates a header table combining all relevant fields from rules and combined_rules tables for json payload to s-bus
+        """
+
+        # Load input tables
+        df_rules = read_table(spark, logger, bronze_table_name)
+        df_combined = read_table(spark, logger, bronze_combined_rules_table)
+        logger.info(f"Read {df_rules.count()} rows from {bronze_table_name}")
+        logger.info(f"Read {df_combined.count()} rows from {bronze_combined_rules_table}")
+
+        filtered_rules_json_df = rules_json_df.filter(
+            col("operation") != "delete"
+        ).distinct()
+        
+        logger.info("Fetch only the rules that need to be sent to s-bus")
+
+        create_update_rules_json_df = (filtered_rules_json_df.withColumn("severity", col("conditions")["severity"])
+            .withColumn("risk_register_controls", col("conditions")["risk_register_controls"])
+            .withColumn("conditions", expr("transform(conditions, x -> struct(x.condition_id, x.condition_name, x.asset_id, x.parameter, x.operator, x.class, x.threshold, x.duration, x.rule_run_frequency, x.sensor_type))"))
+        )
+
+        df_combined_max = df_combined.groupBy("rule_id").agg(max("combination_id").alias("max_combination_id")).distinct()
+
+        logger.info("Get the condition_group_id from combined_rules table as max(combination_id)")
+
+        # Explode risk_register_controls first
+        exploded_risk_df = df_combined_max.join(
+            create_update_rules_json_df, 
+            on="rule_id", 
+            how="inner"
+        ).select(
+            "rule_id",
+            "rule_name",
+            "tenant_id",
+            "join_condition",
+            "max_combination_id",
+            "conditions",
+            explode("risk_register_controls").alias("exploded_risk_register_controls")
+        )
+
+        # Explode severity next
+        exploded_severity_df = exploded_risk_df.select(
+            "rule_id",
+            "rule_name",
+            "tenant_id",
+            "join_condition",
+            "max_combination_id",
+            "conditions",
+            "exploded_risk_register_controls",
+            explode("severity").alias("exploded_severity")
+        )
+
+        # Transform the structs into arrays before applying flatten
+        result_header_df = exploded_severity_df.groupBy(
+            "rule_id",
+            "rule_name",
+            "tenant_id",
+            "join_condition",
+            "max_combination_id",
+            "conditions"
+        ).agg(
+            array_distinct(flatten(collect_list(col("exploded_risk_register_controls")))).alias("risk_register_controls"),
+            array_distinct(collect_list(col("exploded_severity"))).alias("severity"),
+            current_timestamp().alias("last_updated_date")
+        ).withColumn("conditions_json", to_json(col("conditions"))).select(
+            "rule_id",
+            "rule_name",
+            "tenant_id",
+            "join_condition",
+            col("max_combination_id").alias("condition_group_id"),
+            "risk_register_controls",
+            "severity",
+            col("conditions_json").alias("conditions"),
+            "last_updated_date"
+        )
+
+        logger.info("Create rules_header df with selective columns to sent as Json via s-bus payload")
+
+        target_df = read_delta_table(spark, logger, bronze_rules_header_table)
+
+        logger.info("Upsert the data into rules_header table when matched UPDATE else INSERT")
+
+        # Perform the merge operation
+        target_df.alias("target").merge(
+            result_header_df.alias("source"),
+            "target.rule_id = source.rule_id"
+        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+
+        logger.info("Data loaded into rules_header table")
+    except Exception as e:
+        logger.error(f"Error in create_rules_header(): {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def load_combined_rules(spark, logger, source_file_list, catalog, bronze_table_name, bronze_combined_rules_table,bronze_rules_header_table) -> bool:
+    try:
+        logger.info(f"Reading rules table: {bronze_table_name}")
+        rules_df = read_table(spark, logger, bronze_table_name)
+
+        max_timestamp = spark.sql(
+            f'SELECT max(last_updated_date) as max FROM `{catalog}`.bronze_zone.rules'
+        ).collect()[0]["max"]
+        
+        logger.info("Get the latest rules from rules Bronze table")
+
+        filtered_rules_df = rules_df.filter(col("last_updated_date") == max_timestamp)
+        
+        # Get all distinct rule_id from filtered_rules_df
+        distinct_rule_ids = filtered_rules_df.select("rule_id").distinct()
+        
+        logger.info("Creating Combination logic and combined_query for the latest rules")
+        
+        # Fetch the whole rules table with these participating rule_ids
+        extended_filtered_rules_df = rules_df.join(distinct_rule_ids, on="rule_id", how="inner")
+        
+        logger.info("Generate enriched dataframes for AND/OR combinations...")
+        enriched_or_df, enriched_and_df, rules_and_df = pre_generative_checks(extended_filtered_rules_df)
+
+        logger.info("Generate Multi Conditions Combined Rules Query for OR/AND Logic")
+        combo_or_df = generate_or_combined_queries(enriched_or_df).withColumn("join_condition", lit("or"))
+        combo_and_df = generate_and_combined_queries(enriched_and_df, rules_and_df).withColumn("join_condition", lit("and"))
+
+        # Merge and finalize
+        logger.info("Merging AND and OR combinations...")
+        merged_df = combo_or_df.unionByName(combo_and_df)
+        merged_df = merged_df.withColumn("combined_query_updated_date", current_timestamp())
+        logger.info("All the Combined_queries have been loaded into a final dataframe")
+
+        final_df = merged_df.select(
+            "rule_id",
+            col("condition_ids").alias("condition_id"),
+            col("asset_ids").alias("asset_id"),
+            "join_condition",
+            col("group_id").alias("combination_id"),
+            "combined_query",
+            col("combined_query_updated_date").alias("last_updated_date")
+        )
+        
+        # Delete existing rule_id data from the Delta combined_rules table
+
+        delta_table = read_delta_table(spark, logger, bronze_combined_rules_table)
+        logger.info(f"Deleting pre-existing rules from combined rules table: {delta_table}")
+        rule_ids_to_delete = final_df.select("rule_id").distinct().collect()
+        rule_ids_list = [row.rule_id for row in rule_ids_to_delete]
+        
+        if rule_ids_list:
+            delta_table.delete(col("rule_id").isin(rule_ids_list))
+
+        logger.info(f"Deleted pre-existing rules from combined rules table: {bronze_combined_rules_table}")
+
+        write_table(logger, final_df, "append", bronze_combined_rules_table)
+
+        logger.info(f"Combined rules has been loaded successfully, into the table: {bronze_combined_rules_table}")
+
+        rules_json_df = get_rules_json_df(spark, logger, source_file_list)
+
+        create_rules_header(spark, logger, rules_json_df, bronze_table_name, bronze_combined_rules_table, bronze_rules_header_table)
+
+        logger.info(f"rules_header table has been loaded successfully, into the table: {bronze_rules_header_table}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in load_combined_rules(): {str(e)}")
+        raise
