@@ -1,0 +1,2 @@
+Asset_ids: [] INFO:testing_dts:Asset_ids: [] 2025-06-09 06:33:52,152~|~testing_dts~|~ERROR~|~result_df_list is empty. ERROR:testing_dts:result_df_list is empty.
+AttributeError: 'NoneType' object has no attribute 'count'
