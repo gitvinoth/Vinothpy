@@ -1,0 +1,67 @@
+def dts_data_window_append(logger, dts_df_filtered: DataFrame, sample_size: int) -> DataFrame:
+    try:
+        # Get the distinct asset_id values from the table
+        asset_ids = dts_df_filtered.select("asset_id").distinct().rdd.map(lambda r: r[0]).filter(lambda x: x is not None and x != "").collect()
+
+        if not asset_ids:
+            logger.warn("No valid asset_ids found after filtering. No data to publish.")
+            return None  # Graceful return
+
+        logger.info(f"Asset_ids: {asset_ids}")
+        result_df_list = []
+
+        # Process each asset_id
+        for asset_id in asset_ids:
+            new_df = dts_df_filtered.filter(dts_df_filtered["asset_id"] == asset_id)
+
+            # Pivot, average, and aggregate logic here (unchanged)...
+
+            final_df = df_pivoted.withColumn("data", F.flatten(F.col("data")))
+            final_df = final_df.withColumn("asset_id", F.lit(asset_id))
+            output_json = final_df.withColumn("json_output", F.struct("data", "time", "depth"))
+            result_df_list.append(output_json)
+
+        # Union all DataFrames if any
+        if not result_df_list:
+            logger.warn("result_df_list is empty. No data processed.")
+            return None
+
+        result_df = result_df_list[0]
+        for df in result_df_list[1:]:
+            result_df = result_df.union(df)
+
+        return result_df
+
+    except Exception as e:
+        logger.error(f"Error in dts_data_window_append : {str(e)}")
+        raise
+
+
+
+
+def get_cw_dts_df_filtered(
+    spark,
+    logger,
+    latest_data_time: int,
+    time_window: int,
+    silver_table_name: str,
+    sample_size: int,
+):
+    cw_dts_df_filtered = dts_data_filter(
+        spark, logger, latest_data_time, time_window, silver_table_name
+    )
+    cw_df_append = dts_data_window_append(logger, cw_dts_df_filtered, sample_size)
+
+    if cw_df_append is None:
+        logger.warn("No data to publish after processing asset_ids.")
+        return None
+
+    logger.info(f"Data found, current window execution will happen and total {cw_df_append.count()} files will be published")
+    return cw_df_append
+
+
+cw_df_append = get_cw_dts_df_filtered(...)
+if cw_df_append is not None:
+    dts_file_publish(...)
+else:
+    logger.warn("Skipping publish step due to empty DataFrame.")
