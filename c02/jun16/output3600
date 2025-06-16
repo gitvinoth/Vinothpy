@@ -1,0 +1,5 @@
+asset_id	parameter	timestamp	depth	value
+DTS_01	temperature_count	1769904000	100	1
+DTS_01	temperature_sum	1769904000	100	25.5
+DTS_02	temperature_count	1769904000	150	1
+DTS_02	temperature_sum	1769904000	150	26
