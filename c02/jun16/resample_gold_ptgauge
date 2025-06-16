@@ -1,0 +1,138 @@
+# Databricks notebook source
+from delta import DeltaTable
+from itertools import product
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    from_unixtime,
+    col,
+    date_format,
+    first,
+    to_timestamp,
+    unix_timestamp,
+    window,
+)
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass # pragma: no cover
+except NameError:
+    from src.utils.write_utility import write_table
+    from src.utils.read_utility import read_delta_table
+
+# COMMAND ----------
+
+def generate_resample_query(
+    logger, 
+    columns : list,
+    source_table_name: str,
+    frequency: str,
+    partition_cols: str,
+    destination_table_name: str,
+) -> str:
+    """
+    Resampling function generates the actual query runs it, creates a dataframe and finally writes the output in the gold table . 
+    """
+    try:
+
+        functions = ['min','max']
+        select_expr = ""
+        i = 0
+        for col, func in product(columns, functions):
+            if i == 0:
+                select_expr += f"{func}_by(epoch_timestamp, {col}) as {func}_{col}_epoch_timestamp, {func}({col}) as {func}_{col}"
+            else:
+                select_expr += f", {func}_by(epoch_timestamp, {col}) as {func}_{col}_epoch_timestamp, {func}({col}) as {func}_{col}"
+            i += 1
+        columns_string = ','.join(columns)
+
+        query = f"""select
+        unix_timestamp(x.grp) as epoch_timestamp,
+        {partition_cols},
+        {select_expr}
+        from
+        (
+            select
+            {partition_cols},
+            epoch_timestamp,
+            {columns_string},
+            date_trunc(
+                '{frequency}',
+                from_unixtime(epoch_timestamp, 'yyyy-MM-dd HH:mm:ss')
+            ) as grp
+            from
+            {source_table_name}
+            where to_timestamp(epoch_timestamp) >= now() - interval '24 hours'
+        ) x
+        group by
+        {partition_cols},
+        grp
+        order by
+        1"""
+
+        logger.info(f"Resample Query : {query}")
+        
+        return query
+    
+    except Exception as e:
+        if "AnalysisException" in str(e):
+            logger.error(f"Error in resampling: {str(e)}")
+            raise
+        
+        else:
+            logger.error(f"Error in resampling : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def resample_gold(
+    spark,
+    logger,
+    columns: list,
+    source_table_name: str,
+    frequency: str,
+    partition_cols: str,
+    destination_table_name: str,
+) -> bool:
+    """
+    Resampling function generates the actual query by calling generate_resample_query, runs it, creates a dataframe and finally writes the output in the gold table .
+    """
+    try:
+
+        query = generate_resample_query(
+            logger,
+            columns,
+            source_table_name,
+            frequency,
+            partition_cols,
+            destination_table_name,
+        )
+
+        if query:
+
+            resampled_dataframe = spark.sql(query)
+            pt_gauge_gold_dt = read_delta_table(spark, logger, destination_table_name)
+            (
+                pt_gauge_gold_dt.alias("target")
+                .merge(
+                    resampled_dataframe.alias("source"),
+                    "target.asset_id = source.asset_id and target.epoch_timestamp = source.epoch_timestamp"
+                )
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+            return True
+        else:
+            return False
+
+    except Exception as e:
+
+        if "IndexOutOfBoundsError" in str(e):
+            logger.error(f"Error in resample_gold: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in resample_gold : {str(e)}")
+            raise
