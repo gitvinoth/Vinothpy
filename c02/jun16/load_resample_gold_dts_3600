@@ -1,0 +1,224 @@
+# Databricks notebook source
+from delta import DeltaTable
+from itertools import product
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    from_unixtime,
+    col,
+    date_format,
+    date_trunc,
+    first,
+    to_timestamp,
+    unix_timestamp,
+    window,
+)
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass # pragma: no cover
+except NameError:
+    from src.utils.write_utility import write_table
+    from src.utils.read_utility import read_delta_table
+
+# COMMAND ----------
+
+def generate_dts_3600_resample_query(
+    logger,
+    source_table_name: str,
+    partition_cols: str,
+) -> str:
+    """
+    Generates a query to aggregate temperature values (sum and count) for the entire day
+    for each (asset_id, parameter, depth)
+    """
+    try:
+        query = f"""
+        with resampled as (
+            select
+                {partition_cols},
+                date_trunc('day', from_unixtime(epoch_timestamp, 'yyyy-MM-dd HH:mm:ss')) as day_start,
+                value as temperature
+            from {source_table_name}
+            where to_timestamp(epoch_timestamp) >= now() - interval 24 hours
+        ),
+        agg as (
+            select
+                {partition_cols},
+                unix_timestamp(day_start) as timestamp,
+                sum(temperature) as temperature_sum,
+                count(temperature) as temperature_count
+            from resampled
+            group by {partition_cols}, day_start
+        )
+        select asset_id, parameter, timestamp, depth, 'temperature_sum' as record_type, temperature_sum as value
+        from agg
+        union all
+        select asset_id, parameter, timestamp, depth, 'temperature_count' as record_type, temperature_count as value
+        from agg
+        order by asset_id, parameter, depth, timestamp, record_type
+        """
+        logger.info(f"dts_3600 Resample Query : {query}")
+        return query
+    except Exception as e:
+        logger.error(f"Error in generate_dts_3600_resample_query: {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def resample_dts_3600_gold(
+    spark,
+    logger,
+    source_table_name: str,
+    partition_cols: str,
+    destination_table_name: str,
+) -> bool:
+    """
+    Resampling function for dts_3600, creates sum/count per day partition, writes two records per partition.
+    """
+    try:
+        query = generate_dts_3600_resample_query(
+            logger,
+            source_table_name,
+            partition_cols
+        )
+
+        if query:
+            resampled_dataframe = spark.sql(query)
+            dts_3600_gold_dt = read_delta_table(spark, logger, destination_table_name)
+            (
+                dts_3600_gold_dt.alias("target")
+                .merge(
+                    resampled_dataframe.alias("source"),
+                    "target.asset_id = source.asset_id and target.parameter = source.parameter and "
+                    "target.timestamp = source.timestamp and target.depth = source.depth and "
+                    "target.record_type = source.record_type"
+                )
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+            return True
+        else:
+            return False
+
+    except Exception as e:
+        logger.error(f"Error in resample_dts_3600_gold: {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def generate_resample_query(
+    logger, 
+    columns : list,
+    source_table_name: str,
+    frequency: str,
+    partition_cols: str,
+    destination_table_name: str,
+) -> str:
+    """
+    Resampling function generates the actual query runs it, creates a dataframe and finally writes the output in the gold table . 
+    """
+    try:
+
+        functions = ['min','max']
+        select_expr = ""
+        i = 0
+        for col, func in product(columns, functions):
+            if i == 0:
+                select_expr += f"{func}_by(epoch_timestamp, {col}) as {func}_{col}_epoch_timestamp, {func}({col}) as {func}_{col}"
+            else:
+                select_expr += f", {func}_by(epoch_timestamp, {col}) as {func}_{col}_epoch_timestamp, {func}({col}) as {func}_{col}"
+            i += 1
+        columns_string = ','.join(columns)
+
+        query = f"""select
+        unix_timestamp(x.grp) as epoch_timestamp,
+        {partition_cols},
+        {select_expr}
+        from
+        (
+            select
+            {partition_cols},
+            epoch_timestamp,
+            {columns_string},
+            date_trunc(
+                '{frequency}',
+                from_unixtime(epoch_timestamp, 'yyyy-MM-dd HH:mm:ss')
+            ) as grp
+            from
+            {source_table_name}
+            where to_timestamp(epoch_timestamp) >= now() - interval '24 hours'
+        ) x
+        group by
+        {partition_cols},
+        grp
+        order by
+        1"""
+
+        logger.info(f"Resample Query : {query}")
+        
+        return query
+    
+    except Exception as e:
+        if "AnalysisException" in str(e):
+            logger.error(f"Error in resampling: {str(e)}")
+            raise
+        
+        else:
+            logger.error(f"Error in resampling : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def resample_gold(
+    spark,
+    logger,
+    columns: list,
+    source_table_name: str,
+    frequency: str,
+    partition_cols: str,
+    destination_table_name: str,
+) -> bool:
+    """
+    Resampling function generates the actual query by calling generate_resample_query, runs it, creates a dataframe and finally writes the output in the gold table .
+    """
+    try:
+
+        query = generate_resample_query(
+            logger,
+            columns,
+            source_table_name,
+            frequency,
+            partition_cols,
+            destination_table_name,
+        )
+
+        if query:
+
+            resampled_dataframe = spark.sql(query)
+            pt_gauge_gold_dt = read_delta_table(spark, logger, destination_table_name)
+            (
+                pt_gauge_gold_dt.alias("target")
+                .merge(
+                    resampled_dataframe.alias("source"),
+                    "target.asset_id = source.asset_id and target.epoch_timestamp = source.epoch_timestamp"
+                )
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+            return True
+        else:
+            return False
+
+    except Exception as e:
+
+        if "IndexOutOfBoundsError" in str(e):
+            logger.error(f"Error in resample_gold: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in resample_gold : {str(e)}")
+            raise
