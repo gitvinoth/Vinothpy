@@ -1,0 +1,98 @@
+# Databricks notebook source
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/archive_files
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/load_resample_gold
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/utility_functions
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/workflow_metadata_utility
+
+# COMMAND ----------
+
+import os
+from datetime import datetime
+
+# load_resample gold refactor
+
+# COMMAND ----------
+
+import os
+from datetime import datetime
+import json
+
+# for on-prem begin
+try:
+    if dbutils:
+        pass  # pragma: no cover
+except NameError:
+    from src.utils.logger import configure_logger
+    from src.etl.load_resample_gold import resample_gold
+    from src.utils.on_premise.utility_functions import (
+        get_task_env,
+        get_table_name,
+        get_spark_context,
+        move_file,
+    )
+
+
+# COMMAND ----------
+
+
+def main():
+    try:
+        catalog = os.getenv("catalog")
+        storage_host = os.getenv("storage_host")
+
+        source_table = get_task_env("source_table")
+        frequency = get_task_env("frequency")
+        columns = get_task_env("columns").replace(" ", "").split(",")
+        partition_cols = get_task_env("partition_cols")
+
+        source_table_name = get_table_name(catalog, "silver_zone", source_table)
+        destination_table_name = get_table_name(catalog, "gold_zone", source_table)
+
+        spark = get_spark_context()  # new utility func to get spark session
+
+        app_name = "load_resample_gold_pt_gauge"
+        date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")
+        logger = configure_logger(app_name, date)
+
+        if resample_gold(
+            spark,
+            logger,
+            columns,
+            source_table_name,
+            frequency,
+            partition_cols,
+            destination_table_name,
+        ):
+            logger.info(f"Write operation successful in {destination_table_name}")
+        else:
+            logger.info(f"Write operation unsuccessful in {destination_table_name}")
+
+    except Exception as e:
+        raise
+
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    main()  # pragma: no cover
