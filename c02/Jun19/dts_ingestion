@@ -1,0 +1,54 @@
+def load_dts_sm_bronze(
+    spark, logger, source_file_path: list, asset_table_name: str, bronze_table_name: str
+):
+    try:
+        for file_path in source_file_path:
+            logger.info(f"Reading the source file from {file_path}")
+            df = read_text(spark, logger, file_path)
+
+            if (df is None) or (df.count() == 0):
+                logger.info(f"No data to ingest for file: {file_path}")
+                continue
+            else:
+                df = df.withColumn("row_index", monotonically_increasing_id() + 1)
+                logger.info("Fetching the calibrated data starting and ending indexes...")
+                (
+                    calibrated_start_index,
+                    calibrated_end_index,
+                    timestamp_list,
+                ) = fetch_all_calibrated_data(logger, df)
+
+                if len(calibrated_start_index) == len(calibrated_end_index):
+                    logger.info("Extracting the calibrated data")
+                    calibrated_data_final_1 = extract_calibrated_data(
+                        spark,
+                        logger,
+                        df,
+                        calibrated_start_index,
+                        calibrated_end_index,
+                        timestamp_list,
+                    )
+
+                    logger.info("Schema for calibrated_data_final_1")
+                    calibrated_data_final_1.printSchema()
+
+                    asset_delta_table = read_delta_table(spark, logger, asset_table_name)
+                    asset_df = asset_delta_table.toDF()
+
+                    calibrated_data_joined = add_asset_id(
+                        logger, calibrated_data_final_1, asset_df
+                    )
+                    calibrated_data_joined.printSchema()
+
+                    write_table(
+                        logger, calibrated_data_joined, "overwrite", bronze_table_name
+                    )
+                    written_df = read_delta_table(spark, logger, bronze_table_name).toDF()
+
+                else:
+                    logger.error(f"Mismatch in calibrated start and end indices for file: {file_path}")
+                    continue
+        return True
+    except Exception as e:
+        logger.error(f"Error in load_dts_sm_bronze : {str(e)}")
+        raise
