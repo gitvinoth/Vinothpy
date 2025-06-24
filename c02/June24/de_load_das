@@ -1,0 +1,338 @@
+# Databricks notebook source
+# !pip install h5py
+
+# COMMAND ----------
+
+from pyspark.sql.functions import expr
+from pyspark.sql import functions as F
+from pyspark.sql import DataFrame, Row
+from datetime import datetime
+from functools import reduce
+from multiprocessing.pool import ThreadPool
+import multiprocessing
+import os
+
+from pyspark.sql.functions import (
+    col,
+    array_min,
+    array,
+    when,
+    # udf,
+    lit,
+    expr,
+    concat,
+)
+
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    StringType,
+    ArrayType,
+    DoubleType,
+)
+
+# COMMAND ----------
+
+import h5py
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass  # pragma: no cover
+
+except NameError:
+    from src.utils.read_utility import read_delta_table
+    from src.utils.write_utility import write_table, delete_data_from_bronze
+    from src.utils.on_premise.utility_functions import remove_file, copy_file
+
+# COMMAND ----------
+
+
+def get_start_and_end_frequency(logger, h5_file_path):
+    """
+    This function returns dictionaries containing start and end frequency values extracted from H5 file
+    """
+    try:
+        group = "Acquisition"
+        subgroup = "Processed"
+        end_frequency = {}
+        start_frequency = {}
+        with h5py.File(h5_file_path, "r") as h5_file:
+            sub_subgroups_names = list(h5_file[group][subgroup].keys())
+            for sub_subgroup in sub_subgroups_names:
+                dataset = list(h5_file[group][subgroup][sub_subgroup].keys())
+                for dataitem in dataset:
+                    attributes = h5_file[group][subgroup][sub_subgroup][dataitem].attrs
+                    for attribute in list(attributes):
+                        if attribute == "EndFrequency":
+                            end_frequency[dataitem] = attributes[attribute]
+                        if attribute == "StartFrequency":
+                            start_frequency[dataitem] = attributes[attribute]
+
+        return start_frequency, end_frequency
+    except Exception as e:
+        logger.error(f"Error in get_start_and_end_frequency : {str(e)}")
+        raise
+
+
+# COMMAND ----------
+
+
+def freq_band_extraction(spark, logger, h5_file_path: str) -> DataFrame:
+    """
+    This function extracts frequency band from the h5 file.
+    """
+    try:
+
+        start_frequency, end_frequency = get_start_and_end_frequency(
+            logger, h5_file_path
+        )
+
+        # Creating StartFrequency Dataframe
+        start_frequency_list = list(start_frequency.items())
+
+        attribute_schema1 = ["Frequencyband", "StartFrequency"]
+        attribute_row_obj1 = [
+            Row(Frequencyband=row[0], StartFrequency=str(row[1]))
+            for row in start_frequency_list
+        ]
+        attribute_df1 = spark.createDataFrame(
+            attribute_row_obj1, schema=attribute_schema1
+        )
+
+        # Creating EndFrequency Dataframe
+        end_frequency_list = list(end_frequency.items())
+        attribute_schema2 = ["Frequencyband", "EndFrequency"]
+        attribute_row_obj2 = [
+            Row(Frequencyband=row[0], StartFrequency=str(row[1]))
+            for row in end_frequency_list
+        ]
+        attribute_df2 = spark.createDataFrame(
+            attribute_row_obj2, schema=attribute_schema2
+        )
+
+        # creating a frequency_range dataframe
+        frequency_range_df = attribute_df1.join(
+            attribute_df2, on="Frequencyband", how="inner"
+        )
+
+        return frequency_range_df
+
+    except Exception as e:
+        if "FileNotFoundError" in str(e):
+            logger.error(
+                f"Error in freq_band_extraction | Error opening H5 file: {str(e)}"
+            )
+            raise
+
+        else:
+            logger.error(f"Error in freq_band_extraction : {str(e)}")
+            raise
+
+
+# COMMAND ----------
+
+
+def das_data_extraction(
+    spark, logger, h5_file_path: str, device_id: str, asset_bronze_df: str
+) -> DataFrame:
+    """
+    This function extracts data from the h5 file.
+    """
+    try:
+        # set the file path
+        sub_subgroup_path = "/Acquisition/Processed/Fbe[0]"
+        first_element = []
+
+        # Reading the actual contents of the h5 file in a dictinoary
+        with h5py.File(h5_file_path, "r") as h5_file:
+            sub_subgroup = h5_file[sub_subgroup_path]
+            dataset_names = list(sub_subgroup.keys())
+            data_dict = {}
+            for dataset_name in dataset_names:
+                dataset_contents = sub_subgroup[dataset_name][:]
+                data_dict[dataset_name] = dataset_contents.tolist()
+
+        # Converting the dictionary into a list and taking out the 1st item of the list i.e. FbeDataTime and storing it in a separate variable called first_element
+        complete_list = list(data_dict.items())
+
+        first_element_time = complete_list[0][1]
+
+        if len(complete_list) > 0:
+            first_element.append(complete_list.pop(0))
+
+        schema = StructType(
+            [
+                StructField("Frequencyband", StringType(), True),
+                StructField("Data", ArrayType(ArrayType(DoubleType()), True), True),
+            ]
+        )
+
+        asset_df = asset_bronze_df.select("asset_id", "device_id")
+
+        # Creating a dataframe from the complete list and adding device_id column in the dataframe
+        row_obj = [Row(Frequencyband=row[0], Data=row[1]) for row in complete_list]
+        df = spark.createDataFrame(row_obj, schema=schema)
+        df = df.withColumn("device_id", lit(device_id))
+
+        df = df.join(asset_df, on=["device_id"], how="left")
+
+        df = df.withColumn(
+            "asset_id",
+            when(
+                col("asset_id").isNull(), lit("No_match_found_in_Asset_for_device_id")
+            ).otherwise(col("asset_id")),
+        )
+
+        df = df.withColumn("time", array([lit(x) for x in first_element_time]))
+
+        return df
+
+    except Exception as e:
+        if "KeyError" in str(e):
+            logger.error(f"Error in das_data_extraction: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in das_data_extraction : {str(e)}")
+            raise
+
+
+# COMMAND ----------
+
+
+def das_data_transformation(
+    logger, df: DataFrame, frequency_range_df: DataFrame
+) -> DataFrame:
+    """
+    This function takes 2 dataframes (data and frequency band information), transforms the data and makes it ready for writing to bronze table. Finally, it returns the same dataframe
+    """
+    try:
+        
+        parsed_df = df.withColumnRenamed("data", "source_data")
+
+        parsed_df = parsed_df.withColumn(
+            "depth", expr("sequence(0, size(source_data[0]) - 1)")
+        )
+        parsed_df = parsed_df.select(
+            "device_id",
+            "asset_id",
+            "Frequencyband",
+            "source_data",
+            "time",   
+            "depth",
+        )
+
+        # Adding frequency band details
+        parsed_freq_df = parsed_df.join(
+            frequency_range_df, on="Frequencyband", how="inner"
+        )
+        parsed_freq_band_df = parsed_freq_df.withColumn(
+            "freq_band", concat(col("StartFrequency"), lit("-"), col("EndFrequency"))
+        )
+
+        return parsed_freq_band_df
+
+    except Exception as e:
+        if "KeyError" in str(e):
+            logger.error(f"Error in das_data_transformation: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in das_data_transformation : {str(e)}")
+            raise
+
+
+# COMMAND ----------
+
+
+def load_das_files(
+    spark,
+    logger,
+    source_file_path: list,
+    bronze_table_name: str,
+    asset_bronze_table: str,
+) -> bool:
+    """
+    This function runs the file extranction, transformation, and writing to table in parallel using thread pool. It copies each file to the drivers folder, extracts device_id from the file name. After that, it calls other functions to extract frequescy band information, extracting data, transforming data and finally writing to the table.
+    """
+    try:
+        # Creating the frequency band dictionary
+
+        logger.info(
+            f"Das files ingestion started for file location: {source_file_path}"
+        )
+
+        delete_data_from_bronze(spark, logger, bronze_table_name)
+
+        # Reading Asset table which I will use for extracting asset_id
+        asset_bronze_df = read_delta_table(spark, logger, asset_bronze_table).toDF()
+
+        def process_file(file):
+            #### Multiprocessing process name capture which will be used for logging
+            proc = multiprocessing.Process()
+            proc_name = str(proc.name)
+
+            file_name = file.split("/")[-1]
+            h5_file_path = "file:/tmp/" + file_name
+
+            # Deleting the file if it already exists in the local folder of driver
+            remove_file(h5_file_path, True)
+
+            # Copying files to local storage of the driver
+            copy_file(file, h5_file_path)
+
+            # Replacing the file names and removing file: from the name
+            h5_file_path = h5_file_path.replace("file:", "")
+
+            # Extracting device_id from the file name
+            device_id = h5_file_path.split("_")[1].split(".")[0]
+
+            logger.info(
+                f"Thread Name:{proc_name} | Processing file: {file_name}, and device id : {device_id} : freq band extraction starting..."
+            )
+            frequency_range_df = freq_band_extraction(spark, logger, h5_file_path)
+
+            logger.info(
+                f"Thread Name:{proc_name} | Processing file: {file_name}, and device id : {device_id} : data extraction starting..."
+            )
+            df = das_data_extraction(
+                spark, logger, h5_file_path, device_id, asset_bronze_df
+            )
+
+            logger.info(
+                f"Thread Name:{proc_name} | Processing file: {file_name}, and device id : {device_id} : data transformation starting..."
+            )
+            parsed_freq_band_df = das_data_transformation(
+                logger, df, frequency_range_df
+            )
+
+            logger.info(
+                f"Thread Name:{proc_name} | Processing file: {file_name}, and device id : {device_id} : Writing to table..."
+            )
+
+            write_table(logger, parsed_freq_band_df, "append", bronze_table_name)
+
+            logger.info(
+                f"Thread Name:{proc_name} | ================= |Processing file: {file_name}, and device id : {device_id} : Writing completed for {file}  ================= "
+            )
+
+        # Define number of threads to create
+        num_threads = os.cpu_count() * 2
+
+        logger.info(
+            f"Starting multi-threading for following number of threads : {num_threads}"
+        )
+
+        # Create a ThreadPool with specified number of threads
+        pool = ThreadPool(num_threads)
+
+        # Map the process_file function over the files in parallel threads
+        pool.map(process_file, source_file_path)
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in load_das_files : {str(e)}")
+        raise
