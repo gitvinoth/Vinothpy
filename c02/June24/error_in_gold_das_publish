@@ -1,36 +1,38 @@
-2025-06-24 10:16:34,311~|~ips_gold_main_caller~|~INFO~|~Fetch spark context...
-2025-06-24 10:16:34,311 - INFO - Fetch spark context...
-2025-06-24 10:16:34,384~|~ips_gold_main_caller~|~INFO~|~Target file path : ccus-dd40badc-44a8-4c24-994a-ab80edc83478/gold_zone/published/das
-2025-06-24 10:16:34,384 - INFO - Target file path : ccus-dd40badc-44a8-4c24-994a-ab80edc83478/gold_zone/published/das
-2025-06-24 10:16:34,386~|~ips_gold_main_caller~|~INFO~|~Starting publish process.
-2025-06-24 10:16:34,386 - INFO - Starting publish process.
-2025-06-24 10:16:34,389~|~ips_gold_main_caller~|~INFO~|~Reading table : das_well_1__silver_zone
-2025-06-24 10:16:34,389 - INFO - Reading table : das_well_1__silver_zone
-2025-06-24 10:16:34,554~|~ips_gold_main_caller~|~INFO~|~Starting execution for execution time : 1750760194 and time_window : 86400
-2025-06-24 10:16:34,554 - INFO - Starting execution for execution time : 1750760194 and time_window : 86400
-2025-06-24 10:16:36,066~|~ips_gold_main_caller~|~INFO~|~Publishing the file for 30min, 1hr, 1day data for the latest_Date_time:1746814140 and current running time_widow is :86400
-2025-06-24 10:16:36,066 - INFO - Publishing the file for 30min, 1hr, 1day data for the latest_Date_time:1746814140 and current running time_widow is :86400
-2025-06-24 10:16:36,068~|~ips_gold_main_caller~|~INFO~|~Current window start time is: 1746748800
-2025-06-24 10:16:36,068 - INFO - Current window start time is: 1746748800
-2025-06-24 10:16:36,071~|~ips_gold_main_caller~|~INFO~|~Reading the das delta table...
-2025-06-24 10:16:36,071 - INFO - Reading the das delta table...
-2025-06-24 10:16:36,239~|~ips_gold_main_caller~|~INFO~|~Filtering data with start_time: 1746748800 and end_time: 1746835199
-2025-06-24 10:16:36,239 - INFO - Filtering data with start_time: 1746748800 and end_time: 1746835199
-2025-06-24 10:16:43,359~|~ips_gold_main_caller~|~INFO~|~Data found, current window execution will happen and total 20 files will be published
-2025-06-24 10:16:43,359 - INFO - Data found, current window execution will happen and total 20 files will be published
-2025-06-24 10:16:51,428~|~ips_gold_main_caller~|~ERROR~|~Error in das_file_publish : [Errno 13] Permission denied: '/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.json'
-2025-06-24 10:16:51,428 - ERROR - Error in das_file_publish : [Errno 13] Permission denied: '/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.json'
-2025-06-24 10:16:51,430~|~ips_gold_main_caller~|~ERROR~|~Error in das_data_publish : [Errno 13] Permission denied: '/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.json'
-2025-06-24 10:16:51,430 - ERROR - Error in das_data_publish : [Errno 13] Permission denied: '/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.json'
-2025-06-24 10:16:51,432~|~ips_gold_main_caller~|~ERROR~|~Error in ingest_das_file_publish() : [Errno 13] Permission denied: '/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.json'
-2025-06-24 10:16:51,432 - ERROR - Error in ingest_das_file_publish() : [Errno 13] Permission denied: '/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.json'
-2025-06-24 10:16:51,508 - INFO - Removing file or folder from local /tmp/ips_gold_main_caller_2025-06-24-10-16-34-311184.log
-2025-06-24 10:16:51,509 - INFO - Successfully removed /tmp/ips_gold_main_caller_2025-06-24-10-16-34-311184.log
-Moving file from file:/tmp/ips_gold_main_caller_2025-06-24-10-16-34-311184.log to ccus-dd40badc-44a8-4c24-994a-ab80edc83478/logs/ips_gold_main_caller/ips_gold_main_caller_2025-06-24-10-16-34-311184.log of file type: log_files
-Using pool instance ID: 139749016128624 for 'ccus-default', Total pool size: 5
-Uploaded file: /tmp/ips_gold_main_caller_2025-06-24-10-16-34-311184.log to Bucket Name: ccus-dd40badc-44a8-4c24-994a-ab80edc83478 Dest Prefix: logs/ips_gold_main_caller/ips_gold_main_caller_2025-06-24-10-16-34-311184.log 
+2025-06-24 10:42:14,071~|~ips_gold_main_caller~|~INFO~|~Fetch spark context...
+2025-06-24 10:42:14,071 - INFO - Fetch spark context...
+2025-06-24 10:42:14,450~|~ips_gold_main_caller~|~INFO~|~Target file path : ccus-dd40badc-44a8-4c24-994a-ab80edc83478/gold_zone/published/das
+2025-06-24 10:42:14,450 - INFO - Target file path : ccus-dd40badc-44a8-4c24-994a-ab80edc83478/gold_zone/published/das
+2025-06-24 10:42:14,459~|~ips_gold_main_caller~|~INFO~|~Starting publish process.
+2025-06-24 10:42:14,459 - INFO - Starting publish process.
+2025-06-24 10:42:14,467~|~ips_gold_main_caller~|~INFO~|~Reading table : das_well_1__silver_zone
+2025-06-24 10:42:14,467 - INFO - Reading table : das_well_1__silver_zone
+2025-06-24 10:42:15,906~|~ips_gold_main_caller~|~INFO~|~Starting execution for execution time : 1750761734 and time_window : 86400
+2025-06-24 10:42:15,906 - INFO - Starting execution for execution time : 1750761734 and time_window : 86400
+2025-06-24 10:42:28,446~|~ips_gold_main_caller~|~INFO~|~Publishing the file for 30min, 1hr, 1day data for the latest_Date_time:1746814140 and current running time_widow is :86400
+2025-06-24 10:42:28,446 - INFO - Publishing the file for 30min, 1hr, 1day data for the latest_Date_time:1746814140 and current running time_widow is :86400
+2025-06-24 10:42:28,456~|~ips_gold_main_caller~|~INFO~|~Current window start time is: 1746748800
+2025-06-24 10:42:28,456 - INFO - Current window start time is: 1746748800
+2025-06-24 10:42:28,476~|~ips_gold_main_caller~|~INFO~|~Reading the das delta table...
+2025-06-24 10:42:28,476 - INFO - Reading the das delta table...
+2025-06-24 10:42:29,746~|~ips_gold_main_caller~|~INFO~|~Filtering data with start_time: 1746748800 and end_time: 1746835199
+2025-06-24 10:42:29,746 - INFO - Filtering data with start_time: 1746748800 and end_time: 1746835199
+2025-06-24 10:42:59,862~|~ips_gold_main_caller~|~INFO~|~Data found, current window execution will happen and total 20 files will be published
+2025-06-24 10:42:59,862 - INFO - Data found, current window execution will happen and total 20 files will be published
+2025-06-24 10:43:39,019~|~ips_gold_main_caller~|~INFO~|~Publishing the file for freq band: 10.0-16.0 and device id : DAS-001-ID and asset_id : No_match_found_in_Asset_for_device_id to location : ccus-dd40badc-44a8-4c24-994a-ab80edc83478/gold_zone/published/das/No_match_found_in_Asset_for_device_id/10.0-16.0/1746748800_1day.zip
+2025-06-24 10:43:39,019 - INFO - Publishing the file for freq band: 10.0-16.0 and device id : DAS-001-ID and asset_id : No_match_found_in_Asset_for_device_id to location : ccus-dd40badc-44a8-4c24-994a-ab80edc83478/gold_zone/published/das/No_match_found_in_Asset_for_device_id/10.0-16.0/1746748800_1day.zip
+2025-06-24 10:43:39,036~|~ips_gold_main_caller~|~ERROR~|~Error in das_file_publish : [Errno 2] No such file or directory: 'file:/tmp/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.zip'
+2025-06-24 10:43:39,036 - ERROR - Error in das_file_publish : [Errno 2] No such file or directory: 'file:/tmp/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.zip'
+2025-06-24 10:43:39,040~|~ips_gold_main_caller~|~ERROR~|~Error in das_data_publish : [Errno 2] No such file or directory: 'file:/tmp/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.zip'
+2025-06-24 10:43:39,040 - ERROR - Error in das_data_publish : [Errno 2] No such file or directory: 'file:/tmp/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.zip'
+2025-06-24 10:43:39,045~|~ips_gold_main_caller~|~ERROR~|~Error in ingest_das_file_publish() : [Errno 2] No such file or directory: 'file:/tmp/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.zip'
+2025-06-24 10:43:39,045 - ERROR - Error in ingest_das_file_publish() : [Errno 2] No such file or directory: 'file:/tmp/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.zip'
+2025-06-24 10:43:39,187 - INFO - Removing file or folder from local /tmp/ips_gold_main_caller_2025-06-24-10-42-14-069647.log
+2025-06-24 10:43:39,191 - INFO - Successfully removed /tmp/ips_gold_main_caller_2025-06-24-10-42-14-069647.log
+Moving file from file:/tmp/ips_gold_main_caller_2025-06-24-10-42-14-069647.log to ccus-dd40badc-44a8-4c24-994a-ab80edc83478/logs/ips_gold_main_caller/ips_gold_main_caller_2025-06-24-10-42-14-069647.log of file type: log_files
+Using pool instance ID: 140024735108208 for 'ccus-default', Total pool size: 5
+Uploaded file: /tmp/ips_gold_main_caller_2025-06-24-10-42-14-069647.log to Bucket Name: ccus-dd40badc-44a8-4c24-994a-ab80edc83478 Dest Prefix: logs/ips_gold_main_caller/ips_gold_main_caller_2025-06-24-10-42-14-069647.log 
 ---------------------------------------------------------------------------
-PermissionError                           Traceback (most recent call last)
+FileNotFoundError                         Traceback (most recent call last)
 File ~/work/bh-ccus-data-platform/src/etl/ips_gold_main_caller.py:201
     198 # COMMAND ----------
     200 if __name__ == "__main__":
@@ -59,51 +61,75 @@ File ~/work/bh-ccus-data-platform/src/etl/ips_gold_main_caller.py:83, in ingest_
      93 except Exception as e:
      94     logger.error(f"Error in ingest_das_file_publish() : {str(e)}")
 
-File ~/work/bh-ccus-data-platform/src/etl/dt_publish_das_Upd.py:836, in das_data_publish(spark, logger, silver_table_name, target_file_path, initation_time, time_window, sample_size, engine_run_frequency)
-    827     cw_df_append = get_cw_das_df_filtered(
-    828         spark,
-    829         logger,
+File ~/work/bh-ccus-data-platform/src/etl/dt_publish_das_Upd.py:858, in das_data_publish(spark, logger, silver_table_name, target_file_path, initation_time, time_window, sample_size, engine_run_frequency)
+    849     cw_df_append = get_cw_das_df_filtered(
+    850         spark,
+    851         logger,
    (...)
-    833         sample_size,
-    834     )
-    835     # Publish the data
---> 836     das_file_publish(
-    837         logger,
-    838         cw_df_append,
-    839         target_file_path,
-    840         cw_start_time,
-    841         time_window,
-    842     )
-    843 else:
-    844     logger.info(f"No file publish for the current_time:{latest_data_time}and it is not the end of {time_window}")
+    855         sample_size,
+    856     )
+    857     # Publish the data
+--> 858     das_file_publish(
+    859         logger,
+    860         cw_df_append,
+    861         target_file_path,
+    862         cw_start_time,
+    863         time_window,
+    864     )
+    865 else:
+    866     logger.info(f"No file publish for the current_time:{latest_data_time}and it is not the end of {time_window}")
 
-File ~/work/bh-ccus-data-platform/src/etl/dt_publish_das_Upd.py:529, in das_file_publish(logger, input_df, target_file_path, epoch_start_time, time_window)
-    516                 write_and_zip_json_data(
-    517                     logger,
-    518                     json_data,
+File ~/work/bh-ccus-data-platform/src/etl/dt_publish_das_Upd.py:551, in das_file_publish(logger, input_df, target_file_path, epoch_start_time, time_window)
+    538                 write_and_zip_json_data(
+    539                     logger,
+    540                     json_data,
    (...)
-    524                     cloud_zip_file_path,
-    525                 )
-    526         else:
-    527             # Directly create the file in the cloud for other time windows
---> 529             write_and_zip_json_data(
-    530                 logger,
-    531                 json_data,
-    532                 asset_id,
-    533                 device_id,
-    534                 freq_bd_val,
-    535                 epoch_start_time,
-    536                 freq,
-    537                 cloud_zip_file_path,
-    538             )
-    540 except Exception as e:
-    541     if "OSError" in str(e):
+    546                     cloud_zip_file_path,
+    547                 )
+    548         else:
+    549             # Directly create the file in the cloud for other time windows
+--> 551             write_and_zip_json_data(
+    552                 logger,
+    553                 json_data,
+    554                 asset_id,
+    555                 device_id,
+    556                 freq_bd_val,
+    557                 epoch_start_time,
+    558                 freq,
+    559                 cloud_zip_file_path,
+    560             )
+    562 except Exception as e:
+    563     if "OSError" in str(e):
 
-File ~/work/bh-ccus-data-platform/src/etl/dt_publish_das_Upd.py:353, in write_and_zip_json_data(logger, json_data, asset_id, device_id, freq_bd_val, epoch_start_time, freq, cloud_zip_file_path)
-    350 zip_file_path = f"/tmp/{asset_id}_{freq_bd_val}_{epoch_start_time}_{freq}.zip"
-    352 # Write the JSON data to a local file
---> 353 with open(local_file_path, "w") as f:
-    354     f.write(json_data)
-    356 # Create a ZipFile object
+File ~/work/bh-ccus-data-platform/src/etl/dt_publish_das_Upd.py:396, in write_and_zip_json_data(logger, json_data, asset_id, device_id, freq_bd_val, epoch_start_time, freq, cloud_zip_file_path)
+    391 logger.info(
+    392     f"Publishing the file for freq band: {freq_bd_val} and device id : {device_id} and asset_id : {asset_id} to location : {cloud_zip_file_path}"
+    393 )
+    395 # Write the zip file to ADLS Gen2
+--> 396 copy_file(f"file:{zip_file_path}", cloud_zip_file_path)
+    398 # Remove the local zip file
+    399 os.remove(zip_file_path)
 
-PermissionError: [Errno 13] Permission denied: '/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.json'
+File ~/work/bh-ccus-data-platform/src/etl/dt_publish_das_Upd.py:286, in copy_file(source, dest)
+    284 def copy_file(source: str, dest: str):
+    285     try:
+--> 286         shutil.copy(source, dest)
+    287     except Exception as e:
+    288         raise
+
+File /opt/conda/lib/python3.10/shutil.py:417, in copy(src, dst, follow_symlinks)
+    415 if os.path.isdir(dst):
+    416     dst = os.path.join(dst, os.path.basename(src))
+--> 417 copyfile(src, dst, follow_symlinks=follow_symlinks)
+    418 copymode(src, dst, follow_symlinks=follow_symlinks)
+    419 return dst
+
+File /opt/conda/lib/python3.10/shutil.py:254, in copyfile(src, dst, follow_symlinks)
+    252     os.symlink(os.readlink(src), dst)
+    253 else:
+--> 254     with open(src, 'rb') as fsrc:
+    255         try:
+    256             with open(dst, 'wb') as fdst:
+    257                 # macOS
+
+FileNotFoundError: [Errno 2] No such file or directory: 'file:/tmp/No_match_found_in_Asset_for_device_id_10.0-16.0_1746748800_1day.zip'
