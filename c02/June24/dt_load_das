@@ -1,0 +1,285 @@
+# Databricks notebook source
+from delta.tables import DeltaTable
+from pyspark.sql.types import (
+    ArrayType,
+    DoubleType,
+    IntegerType,
+    FloatType,
+    LongType,
+    StructType,
+    StructField,
+)
+from pyspark.sql.functions import (
+    col,
+    flatten,
+    collect_list,
+    array,
+    first,
+    struct,
+    col,
+    udf,
+    floor,
+    array_min,
+    split,
+    explode,
+    posexplode,
+    avg,
+    sort_array,
+    size,
+    array_sort,
+    lit,
+    min,
+    sum,
+    expr,
+    arrays_zip,
+    sum as _sum,
+    DataFrame,
+)
+from datetime import datetime, timezone, time as t
+import numpy as np
+from pyspark.sql import functions as F
+from pyspark.sql import DataFrameNaFunctions
+from datetime import datetime, timedelta
+from pyspark.sql import types as T
+import time
+from delta.tables import DeltaTable
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass  # pragma: no cover
+
+except NameError:
+    from src.utils.read_utility import read_delta_table
+    from src.utils.write_utility import write_table
+
+# COMMAND ----------
+
+def explode_time(spark, logger, converted_df):
+    try:
+        logger.info("Exploding time and data...")
+        # Step 1: Explode the 'time' array and capture the position (index)
+        exploded_df = converted_df.select( "*", F.posexplode("time").alias("pos", "time_exploded"))
+
+        exploded_df = exploded_df.withColumn("time_exploded", F.col("time_exploded") / 1000000)
+
+        exploded_df = exploded_df.withColumn("data", F.expr("source_data[pos]"))
+
+        # Step 3: Select the required columns, keeping 'depth' unchanged, and rename columns for clarity
+        exploded_df = exploded_df.select(
+            "device_id",
+            "asset_id",
+            F.col("time_exploded").alias("time"), # The exploded time values
+            "data", # Corresponding 1D array from 2D data
+            "depth",
+            "freq_band"
+        )
+
+        return exploded_df
+
+    except Exception as e:
+        logger.error(f"Error in explode_time | {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def floor_and_average_data(spark, logger, exploded_df):
+    try:
+        # Step 1: Floor 'time' to the nearest minute and retain the original column name 'time'
+        logger.info("Flooring and averaging time and data...")
+        floored_df = exploded_df.withColumn(
+            "time", 
+            (F.floor(F.col("time") / 60) * 60).cast("long") # Round down to the nearest minute
+        )
+
+        # Step 2: Explode the 'data' array, getting 'pos' to track element positions
+        df_exploded = floored_df.select(
+            "device_id", # Keep device_id unchanged
+            "asset_id", # Keep asset_id unchanged
+            "time", # Floored time, keep column name as 'time'
+            "depth", # Keep depth unchanged
+            F.posexplode("data").alias("pos", "data_value"), # Explode with position (pos)
+            "freq_band" # Keep freq_band unchanged
+        )
+
+        # Step 3: Group by 'asset_id', 'time', 'pos', and 'freq_band', then calculate element-wise average
+        df_avg = df_exploded.groupBy("device_id", "asset_id", "time", "pos", "freq_band") \
+        .agg(F.avg("data_value").alias("avg_data_value"))
+
+        # Step 4: Collect 'avg_data_value' into an ordered array, keeping the values ordered by 'pos'
+        df_result = df_avg.groupBy("device_id", "asset_id", "time", "freq_band") \
+            .agg(F.collect_list(F.struct("pos", "avg_data_value")).alias("pos_avg_list")) \
+            .withColumn(
+            "data", 
+            F.expr("transform(array_sort(pos_avg_list, (x, y) -> x.pos - y.pos), x -> x.avg_data_value)")
+        )
+            
+        # Collect depth (assuming it is constant within each group) and add it back to the final DataFrame
+        df_depth = exploded_df.groupBy("freq_band", "asset_id", "device_id") \
+        .agg(F.first("depth").alias("depth"))
+
+        df_result = df_result.join(df_depth, on=["freq_band", "asset_id", "device_id"])
+
+        return df_result
+
+    except Exception as e:
+        logger.error(f"Error in floor_and_average_data: {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def adding_metadata(spark, logger, floored_df):
+    try: 
+        # Selecting final columns and adding metadata
+        final_df = floored_df.withColumn("last_updated_date", F.lit(datetime.now())) 
+
+        #Define the target schema order 
+        target_schema = ["device_id",
+            "asset_id",
+            "time",
+            "data",
+            "depth",
+            "freq_band",
+            "last_updated_date"]
+        
+        # Reorder the DataFrame columns to match the target schema  
+        final_df = final_df.select([col(column) for column in target_schema])
+
+        logger.info("Metadata added successfully...")
+
+        return final_df
+    
+    except Exception as e:
+        logger.error(f"Error in adding_metadata : {str(e)}")
+        raise Exception(f"Error in adding_metadata : {str(e)}")
+
+# COMMAND ----------
+
+def das_frequency_bands(spark, logger, bronze_df, frequency_band_table: str):
+    try:
+        # Compute current epoch time
+        current_epoch = int(time.time())
+
+        # Add current epoch time as a column to bronze_df
+        bronze_df_with_epoch = bronze_df.withColumn(
+            "epoch", F.lit(current_epoch).cast(LongType())
+        )
+
+        # Aggregate bronze_df to get the latest epoch timestamp
+        distinct_bronze_df = bronze_df_with_epoch.select(
+            "asset_id",
+            col("epoch").alias("latest_received_timestamp"),
+            col("freq_band").alias("frequency_band"),
+        ).distinct()
+
+        frequency_band_dt = read_delta_table(spark, logger, frequency_band_table)
+
+        max_retries = 10
+        delay = 5
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                frequency_band_dt.alias("target").merge(
+                    distinct_bronze_df.alias("source"),
+                    "target.asset_id = source.asset_id AND target.frequency_band = source.frequency_band",
+                ).whenMatchedUpdate(
+                    set={
+                        "latest_received_timestamp": "source.latest_received_timestamp",
+                    }
+                ).whenNotMatchedInsert(
+                    values={
+                        "asset_id": "source.asset_id",
+                        "latest_received_timestamp": "source.latest_received_timestamp",
+                        "frequency_band": "source.frequency_band",
+                    }
+                ).execute()
+
+                logger.info("Das Frequency Bands updated successfully...")
+                break
+
+            except Exception as e:
+                if "concurrent update" in str(e):
+                    logger.info(f"Concurrent update detected on attempt {attempt}. Retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    delay = delay * 2
+
+                    if attempt == max_retries:
+                        logger.error(f"Failed to update Das Frequency Bands after {max_retries} attempts due to concurrent update issues.")
+                        raise e
+
+    except Exception as e:
+        logger.error(f"Error in das_frequency_bands : {str(e)}")
+        raise RuntimeError(f"Error in das_frequency_bands function: {e}")
+
+# COMMAND ----------
+
+def load_das_silver(
+    spark,
+    logger,
+    bronze_table_name: str,
+    silver_table_name: str,
+    das_frequency_bands_table: str,
+) -> bool:
+    """
+    This function calls the function to generate the target dataframe. Finally, it loads the target dataframe into silver table in append mode.
+    """
+    try:
+
+        # Read from the bronze and silver table using the Delta Table API
+        source_df = read_delta_table(spark, logger, bronze_table_name).toDF()
+
+        if source_df.count() == 0:
+            logger.info("No data to ingest...")
+            return False
+
+        else:
+
+            # update frequency band table
+            das_frequency_bands(spark, logger, source_df, das_frequency_bands_table)
+
+            silver_table = read_delta_table(spark, logger, silver_table_name)
+
+            #delete data older than last month's first date from current date
+            # truncate_data(spark, logger, silver_table)
+            
+            #sort time and data from bronze
+            exploded_df = explode_time(spark, logger, source_df)
+
+            #floor to minute and average data
+            floored_df = floor_and_average_data(spark, logger, exploded_df)
+
+            # Selecting final columns and adding metadata
+            final_df = adding_metadata(spark, logger, floored_df)
+
+            logger.info("Insert the new rows...")
+
+            # Insert new records into the target table
+            write_table(
+                logger,
+                final_df,
+                mode="append",
+                table_name=silver_table_name,
+                merge_schema="false",
+            )
+
+            logger.info("Data Loaded successfully...")
+
+            return True
+
+    except Exception as e:
+        if "TableNotFoundException" in str(e):
+            logger.error(f"Error in load_das_silver | Table not found: {str(e)}")
+            raise
+
+        else:
+            logger.error(f"Error in load_das_silver : {str(e)}")
+            raise
