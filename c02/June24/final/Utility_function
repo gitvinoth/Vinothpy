@@ -1,0 +1,348 @@
+# Databricks notebook source
+# MAGIC %run ./constants
+
+# COMMAND ----------
+
+from pyspark.sql import SparkSession
+from delta.pip_utils import configure_spark_with_delta_pip
+from delta.tables import DeltaTable
+
+import os
+import logging
+import src.utils.on_premise.dbutils_minio_functions as dmf
+
+# from sparkSession import getSparkSession
+from minio import Minio
+from minio.commonconfig import CopySource
+from urllib.parse import urlparse
+
+from src.utils.on_premise.constants import (
+    CCUS_BUCKET,
+    RAW_FILE_TYPE,
+    PROCESSED_FILE_TYPE,
+    LOG_FILE_TYPE,
+    ASSET_TABLE_NAME,
+    DAS_FREQUENCY_BANDS
+)
+
+from src.utils.on_premise.workflow_tables import task_tables
+from src.resources.table_schema.bronze_zone_schema import bronze_zone, das_well_list
+from src.resources.table_schema.silver_zone_schema import silver_zone, das_well_list
+from src.resources.table_schema.gold_zone_schema import gold_zone
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+
+def getEnvironmentVariable(varName):
+    return os.environ[varName]
+
+
+def create_minio_client():
+    return Minio(
+        "minio:9000",
+        "h0pd3TQjiRgNRIouPC4C",
+        "TSOtqFQVq814nu4boJMSoMnQLi4vFPM9jxt3lcDr",
+        secure=False,
+    )
+
+
+def copy_file_to_processed_folder(client: Minio, source: str, dest: str):
+    client.copy_object(CCUS_BUCKET, dest, CopySource(CCUS_BUCKET, source))
+
+
+def get_file_path(file_path: str):
+    """
+    This function returns custom list of file paths for a given path
+    """
+    try:
+        file_path = file_path.replace("*/", "")
+        file_path_list = []
+        file_infos = dmf.list_minio_objects(file_path)
+        # logging.info(f"file_infos:: {file_infos}")
+        for file_info in file_infos:
+            path = file_info["path"]
+            if path.endswith("/"):
+                file_infos += dmf.list_minio_objects(path)
+            elif not (path.endswith("PlaceHolder")):
+                file_path_list.append(f"s3a://{path}")
+        logging.info(f"get_file_path {file_path_list}")
+        return file_path_list
+    except Exception as e:
+        logging.error(f"Error listing files at {file_path}: {e}")
+
+
+def get_secrets(scope, key):
+    """
+    Code for on-prem using minio to be added
+    """
+    pass
+
+
+def remove_file_from_raw_folder(client: Minio, source: str):
+    client.remove_object(CCUS_BUCKET, source)
+
+
+def get_job_and_run_id():
+    return (
+        int(getEnvironmentVariable("workflow_id")),
+        int(getEnvironmentVariable("run_id")),
+        int(getEnvironmentVariable("task_id")),
+    )
+
+def load_tables_for_task(spark, task_name):
+    if task_name.startswith('das_bronze_'):
+        actual_task_name = 'das_bronze'
+    elif task_name.startswith('das_silver_'):
+        actual_task_name = 'das_silver'
+    else:
+        actual_task_name = task_name
+
+    if actual_task_name in task_tables:
+        tables_to_load = task_tables[actual_task_name]
+        for x in tables_to_load:
+            storage_host = os.getenv("storage_host")
+            if x['table'] == 'das':
+                table_name = f"das_{os.getenv('source_well_name')}"
+                table_name = get_table_name(get_task_env("catalog"), x['zone'], table_name)
+            else:
+                table_name = get_table_name(get_task_env("catalog"), x['zone'], x['table'])
+
+            table_name_parts = table_name.split("__")
+            table_zone = table_name_parts[1]
+            table = table_name_parts[0]
+
+            if table.startswith('das_') and table != 'das_frequency_bands':
+                table = 'das'
+
+            table_schema = {
+            "bronze_zone": bronze_zone,
+            "silver_zone": silver_zone,
+            "gold_zone": gold_zone,
+            }
+
+            schema = table_schema[table_zone][table]
+
+            if table_name == "das" and table_zone == "silver_zone" :
+                spark.sql(
+                    f"""CREATE TABLE IF NOT EXISTS {table_name} ({schema}) USING DELTA PARTITIONED BY (freq_band) LOCATION 's3a://{storage_host}/{table_zone}/{table_name}/' TBLPROPERTIES('delta.targetFileSize' = '128000000')"""
+                )
+            # elif (table_name == "pt_gauge" and table_zone == "silver_zone") or (table_name == "dts_sm" and table_zone == "bronze_zone"):
+            #     spark.sql(
+            #         f"""CREATE TABLE IF NOT EXISTS {table_name} ({schema}) USING DELTA PARTITIONED BY (asset_id) LOCATION 's3a://{storage_host}/{table_zone}/{table_name}/'"""
+            #     )
+            else:
+                spark.sql(
+                    f"""CREATE TABLE IF NOT EXISTS {table_name} ({schema}) USING DELTA LOCATION 's3a://{storage_host}/{table_zone}/{table_name}/'"""
+                )
+        
+
+
+def get_spark_context():
+    spark = (
+        SparkSession
+        .builder.master(get_task_env("spark_master"))
+        .appName(get_task_env('task_name'))
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        # .config("spark.executor.memory", get_task_env('executor_memory'))
+        # .config("spark.cores.max", get_task_env('executor_cores'))
+    )
+
+    # spark = (
+    #     SparkSession.builder.master("local[*]")
+    #     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    #     .config(
+    #         "spark.sql.catalog.spark_catalog",
+    #         "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+    #     )
+    #     .appName("test")
+    # )
+
+    # my_packages = ["org.apache.hadoop:hadoop-aws:3.3.4"]
+
+    # spark = configure_spark_with_delta_pip(spark, extra_packages=my_packages).getOrCreate()
+
+    spark = configure_spark_with_delta_pip(spark).getOrCreate()
+
+    spark_context = spark.sparkContext
+
+    spark_context._jsc.hadoopConfiguration().set(
+        "fs.s3a.access.key", getEnvironmentVariable("s3_accesskey")
+    )
+    spark_context._jsc.hadoopConfiguration().set(
+        "fs.s3a.secret.key", getEnvironmentVariable("s3_secret")
+    )
+    spark_context._jsc.hadoopConfiguration().set(
+        "fs.s3a.endpoint", "http://" + getEnvironmentVariable("s3_endpoint")
+    )
+    spark_context._jsc.hadoopConfiguration().set("fs.s3a.connection.ssl.enabled", "true")
+    spark_context._jsc.hadoopConfiguration().set("fs.s3a.path.style.access", "true")
+    spark_context._jsc.hadoopConfiguration().set("fs.s3a.attempts.maximum", "1")
+    spark_context._jsc.hadoopConfiguration().set(
+        "fs.s3a.connection.establish.timeout", "5000"
+    )
+    spark_context._jsc.hadoopConfiguration().set("fs.s3a.connection.timeout", "10000")
+
+    task_name = get_task_env('task_name')
+
+    # spark = SparkSession.builder \
+    # .appName(task_name) \
+    # .getOrCreate()
+    
+    load_tables_for_task(spark, get_task_env("task_name"))
+
+    return spark
+
+
+def get_table_name(catalog: str, zone: str, name: str):
+    return f"{name}__{zone}"
+
+
+
+
+
+def get_task_env(key):
+    return os.environ[key]
+
+
+def move_raw_files(source: str, dest: str):
+    client = create_minio_client()
+    trim_source = source[source.find(RAW_FILE_TYPE) :]
+    trim_dest = dest[dest.find(PROCESSED_FILE_TYPE) :]
+    copy_file_to_processed_folder(client, trim_source, trim_dest)
+    remove_file_from_raw_folder(client, trim_source)
+
+
+def move_log_files(source: str, dest: str):
+    print(f"no log files to move from {source} to {dest} during on-prem")
+
+
+def move_file(source: str, dest: str, type=None, recurse=False):
+    print(f"Moving file from {source} to {dest} of file type: {type}")
+    try:
+        corrected_source = source.replace("s3a://", "")
+        corrected_dest = dest.replace("s3a://", "")
+
+        if corrected_source.startswith("file:/"):
+            corrected_source = corrected_source.replace("file:", "")
+            copy_file_from_local(corrected_source, corrected_dest)
+            remove_file_from_local(corrected_source)
+        elif corrected_dest.startswith("file:/"):
+            corrected_dest = corrected_dest.replace("file:", "")
+            copy_file_to_local(corrected_source, corrected_dest)
+        else:
+            dmf.move_minio_object(corrected_source, corrected_dest)
+            
+
+        # if type is not None:
+        #     if type == RAW_FILE_TYPE:
+        #         dmf.move_minio_object(corrected_source, corrected_dest)
+        #     elif type == LOG_FILE_TYPE:
+        #         # _move_log_files(source, dest)
+        #         dmf.upload_to_minio_object(source, dest)
+        # else:
+        #     dmf.move_minio_object(corrected_source, corrected_dest)
+        #     logging.info(
+        #         f"Successfully moved file from {corrected_source} to {corrected_dest} :: ELSE with no Type"
+        #     )
+    except Exception as e:
+        logging.error(
+            f"Error moving file from {corrected_source} to {corrected_dest}: {e}"
+        )
+
+
+def copy_file(source: str, dest: str):
+    # print(f"Copying file from {source} to {dest}")
+    try:
+        corrected_source = source.replace("s3a://", "")
+        corrected_dest = dest.replace("s3a://", "")
+        if corrected_source.startswith('file:/'):
+            corrected_source = corrected_source.replace("file:", "")
+            copy_file_from_local(corrected_source, corrected_dest)
+        elif corrected_dest.startswith('file:/'):
+            corrected_dest = corrected_dest.replace("file:", "")
+            copy_file_to_local(corrected_source, corrected_dest)
+        else:
+            dmf.copy_minio_object(corrected_source, corrected_dest)
+        logging.info(f"Successfully copied file from {corrected_source} to {corrected_dest}")
+    except Exception as e:
+        logging.error(f"Error copying file from {corrected_source} to {corrected_dest}: {e}")
+
+
+def remove_file(path, recursive=False):
+    logging.info(f"Removing file or folder at {path} with recursive={recursive}")
+    try:
+        if path.startswith('file:/'):
+            remove_file_from_local(path)
+        else:
+            dmf.remove_minio_object(path, recursive)
+        logging.info(f"Successfully removed {path}")
+    except Exception as e:
+        logging.error(f"Error removing {path}: {e}")
+
+
+def list_files(path: str):
+    """
+    This function returns list of file paths for a given path
+    """
+    try:
+        file_infos = dmf.list_minio_objects(path)
+        logging.info(f"list_files {file_infos}")
+        return file_infos
+    except Exception as e:
+        logging.error(f"Error listing files at {path}: {e}")
+
+def copy_file_to_local(source: str, dest: str):
+    print(f"Copying file from {source} to {dest}")
+    try:
+        dmf.download_from_minio_object(source, dest)
+        logging.info(f"Successfully copied file from {source} to {dest}")
+    except Exception as e:
+        logging.error(f"Error copying file from {source} to {dest}: {e}")
+
+def remove_file_from_local(path):
+    logging.info(f"Removing file or folder from local {path}")
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            logging.info(f"Successfully removed {path}")
+        else:
+            logging.info(f"File not found to remove: {path}")
+    except Exception as e:
+        logging.error(f"Error removing {path}: {e}")
+
+def copy_file_from_local(source: str, dest: str):
+    try:
+        dmf.upload_to_minio_object(source, dest)
+        #logging.info(f"Successfully copied file from {source} to {dest}")
+    except Exception as e:
+        logging.error(f"Error copying file from {source} to {dest}: {e}")
+
+def get_azure_service_bus_details(scope=None):
+    AZURE_TENANT_ID = os.environ["AZURE_TENANT_ID"]
+    AZURE_CLIENT_ID = os.environ["AZURE_CLIENT_ID"]
+    AZURE_CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
+    return {
+        "AZURE_TENANT_ID": AZURE_TENANT_ID,
+        "AZURE_CLIENT_ID": AZURE_CLIENT_ID,
+        "AZURE_CLIENT_SECRET": AZURE_CLIENT_SECRET
+    }
+
+def read_table(spark: SparkSession, table_name: str):
+    if table_name == ASSET_TABLE_NAME:
+        spark.sql(
+            f"""CREATE TABLE IF NOT EXISTS {table_name} 
+                (asset_id string, device_id string, tenant_id string, last_updated_date timestamp) 
+                USING DELTA 
+                LOCATION 's3a://ccus/bronze_zone/asset'"""
+        )
+    elif table_name == DAS_FREQUENCY_BANDS:
+        spark.sql(
+            f"""CREATE TABLE IF NOT EXISTS {table_name} 
+                (asset_id string, last_received_timestamp bigint, frequency_band string) 
+                USING DELTA 
+                LOCATION 's3a://ccus/silver_zone/das_frequency_bands'"""
+        )
+    return DeltaTable.forName(spark, table_name)
