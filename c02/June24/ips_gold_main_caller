@@ -1,0 +1,226 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC %md
+# MAGIC ##### Job Parameters
+# MAGIC - source_data_type : Describes the type of source file to ingest. E.g. DAS, DTS, PT_GAUGE, FLOWMETER etc.
+# MAGIC - activity_name : The type of activity to perform. E.g. Publish or Retention.
+# MAGIC
+# MAGIC ##### Environment Variables
+# MAGIC - catalog : Contains the name of the catalog. Changes from tenant to tenant and environment to environment.
+# MAGIC - storage_host : Contains the fully qualified host name where the delta files are persisted.
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/constants
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/archive_files
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/utility_functions
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/workflow_metadata_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/dt_publish_das
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/dt_publish_dts
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/dt_summarize_das
+
+# COMMAND ----------
+
+import os
+import time
+from pyspark.sql import DataFrame
+from datetime import datetime
+
+
+# for on-prem begin
+try:
+    if dbutils:
+        pass
+except NameError:
+    from src.utils.logger import configure_logger
+    from src.etl.dt_publish_das import das_data_publish
+    from src.etl.dt_publish_dts import dts_data_publish
+    from src.etl.dt_summarize_das import das_data_summarize
+    from src.utils.archive_files import move_to_processed_files, archive_published_files
+    from src.utils.on_premise.utility_functions import (
+        get_task_env,
+        move_file,
+        get_spark_context,
+        get_table_name
+    )
+    from src.utils.on_premise.constants import DAS,DAS_SUMMARY_TABLE,DTS_TABLE_NAME, LOG_FILE_TYPE
+
+# COMMAND ----------
+
+def ingest_das_gold_summary(
+    spark, logger, catalog, das_silver_table_name, target_table_name
+):
+    """This function invokes the logic to ingest summary data to das gold layer tables"""
+    try:
+        das_silver_table = get_table_name(catalog, "silver_zone", das_silver_table_name)
+        das_summary_table = get_table_name(catalog, "gold_zone", target_table_name)
+        logger.info("Invoking the das_data_summarize() function...")
+        das_data_summarize(spark, logger, das_silver_table, das_summary_table)
+    except Exception as e:
+        logger.error(f"Error in ingest_das_gold_summary() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def ingest_das_file_publish(spark, logger, catalog, target_file_path, initation_time, sample_size):
+    try:
+        time_window = int(get_task_env("time_window"))  
+        source_well_name = get_task_env("source_well_name")  
+        sample_size = int(get_task_env("sample_size"))
+        engine_run_frequency = int(get_task_env("engine_run_frequency"))
+        silver_table_name = get_table_name(catalog, "silver_zone", f"das_{source_well_name}")
+        
+        logger.info("Starting publish process.")
+
+        ret = das_data_publish(
+            spark,
+            logger,
+            silver_table_name,
+            target_file_path,
+            initation_time,
+            time_window,
+            sample_size,
+            engine_run_frequency,
+        )
+    except Exception as e:
+        logger.error(f"Error in ingest_das_file_publish() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def ingest_das_retention(spark, logger, target_file_path):
+    try:
+        retention_time_sec = int(get_task_env("retention_time_sec"))  
+        freq = get_task_env("freq")   
+        
+        logger.info("Starting archival process.")
+
+        ret = archive_published_files(
+            logger, target_file_path, retention_time_sec, freq
+        )
+    except Exception as e:
+        logger.error(f"Error in ingest_das_retention() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def ingest_dts_file_publish(spark, logger, catalog, target_file_path, initation_time):
+    try:
+        time_window = int(get_task_env("time_window"))  # 3600 # 604800
+        silver_table_name = get_table_name(catalog, "silver_zone", DTS_TABLE_NAME)
+        sample_size = int(get_task_env("sample_size"))
+        engine_run_frequency = int(get_task_env("engine_run_frequency"))
+                
+        logger.info("Starting publish process.")
+
+        ret = dts_data_publish(
+            spark,
+            logger,
+            silver_table_name,
+            target_file_path,
+            initation_time,
+            time_window,
+            sample_size,
+            engine_run_frequency
+        )
+    except Exception as e:
+        logger.error(f"Error in ingest_dts_file_publish() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def ingest_dts_retention(spark, logger, target_file_path):
+    try:
+        retention_time_sec = int(get_task_env("retention_time_sec")) 
+        freq = get_task_env("freq")  
+
+        logger.info("Starting archival process.")
+
+        ret = archive_published_files(logger, target_file_path, retention_time_sec, freq)
+    except Exception as e:
+        logger.error(f"Error in ingest_das_retention() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def main():
+    try:
+        app_name = "ips_gold_main_caller"
+        job_start_timestamp = datetime.now()
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+        logger = configure_logger(app_name, date)
+
+        initation_time = int(time.time())
+        logger.info("Fetch spark context...")
+        spark = get_spark_context()
+
+        source_data_type = (get_task_env("source_data_type")).lower() # "das" # "dts"
+        activity_name = (get_task_env("activity_name")).lower() # "das_file_publish" # "dts_file_publish"
+
+       
+        catalog = os.getenv("catalog")
+        storage_host = os.getenv("storage_host")
+        sample_size = 1
+
+        publish_file_path = f"gold_zone/published/{source_data_type}"
+        target_file_path = f"{storage_host}/{publish_file_path}"
+        logger.info(f"Target file path : {target_file_path}")
+
+        if activity_name == "das_file_publish":
+            ingest_das_file_publish(spark, logger, catalog, target_file_path, initation_time, sample_size) 
+
+        elif activity_name == "das_file_retention":
+            ingest_das_retention(spark, logger, target_file_path)
+
+        elif activity_name == "dts_file_publish":
+            ingest_dts_file_publish(spark, logger, catalog, target_file_path, initation_time)
+
+        elif activity_name == "dts_file_retention":
+            ingest_dts_retention(spark, logger, target_file_path) 
+
+        elif activity_name == "das_gold_summary":
+            ingest_das_gold_summary(spark, logger, catalog,DAS, DAS_SUMMARY_TABLE)
+
+    except Exception as e:
+        raise
+    finally:
+        move_file(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"{storage_host}/logs/{app_name}/{app_name}_{date}.log",
+            LOG_FILE_TYPE,
+        )
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    main()  # pragma: no cover
