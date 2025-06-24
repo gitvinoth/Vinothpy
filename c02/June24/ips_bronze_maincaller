@@ -1,0 +1,822 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC ##### Job Parameters
+# MAGIC - source_data_type : Describes the type of source file to ingest. E.g. DAS, DTS, PT_GAUGE, FLOWMETER etc.
+# MAGIC - workflow_name : The name of the workflow.
+# MAGIC - task_name : The name of the task.
+# MAGIC - source_well_name : Passed only when the source file is of DAS. Contains the name of the well.
+# MAGIC
+# MAGIC ##### Environment Variables
+# MAGIC - catalog : Contains the name of the catalog. Changes from tenant to tenant and environment to environment.
+# MAGIC - storage_host : Contains the fully qualified host name where the delta files are persisted.
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/constants
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/file_metadata_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/workflow_metadata_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/error_logging_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/files_archival_table_functions
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/archive_files
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/utility_functions
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/de_load_dts_sm
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/de_load_pt_gauge
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/de_load_pt_gauge_electricals
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/de_load_flowmeter
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/de_load_flowmeter_data_as_files
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/de_load_das
+
+# COMMAND ----------
+
+import os
+from datetime import datetime
+
+# for on-prem begin
+try:
+    if dbutils:
+        pass
+except NameError:
+    from src.utils.logger import configure_logger
+    from src.utils.error_logging_utility import log_error
+    from src.utils.file_metadata_utility import check_file_extension
+    from src.utils.write_utility import delete_data_from_bronze
+    from src.utils.archive_files import move_to_processed_files
+    from src.etl.de_load_pt_gauge import load_ptgauge_bronze
+    from src.etl.de_load_pt_gauge_electricals import load_pt_gauge_electrical_bronze
+    from src.etl.de_load_das import load_das_files
+    from src.etl.de_load_dts_sm import load_dts_sm_bronze
+    from src.etl.de_load_flowmeter import load_flowmeter_data_bronze
+    from src.utils.on_premise.utility_functions import (
+        get_task_env,
+        get_table_name,
+        move_file,
+        get_job_and_run_id,
+        get_spark_context,
+    )
+    from src.utils.on_premise.constants import (
+        RAW_FILE_TYPE,
+        DTS_TABLE_NAME,
+        ASSET_TABLE_NAME,
+        ERROR_LOG_TABLE_NAME,
+        PTGAUGE_TABLE_NAME,
+        PTGAUGEELECTRICALS_TABLE_NAME,
+        IPS_BUCKET,
+        LOG_FILE_TYPE,
+        DAS,
+        DTS,
+        FLOWMETER,
+    )
+    from src.utils.files_archival_table_functions import write_to_files_archival_table
+
+# COMMAND ----------
+
+
+def get_file_paths(logger, source, source_data_type, storage_host):
+    try:
+        if source_data_type.lower() == "das":
+            source_well_name = get_task_env("source_well_name")
+            raw_file_path = (
+                f"{RAW_FILE_TYPE}/{source}/{source_data_type}/{source_well_name}"
+            )
+        else:
+            raw_file_path = f"{RAW_FILE_TYPE}/{source}/{source_data_type}/*/"
+
+        source_file_path = f"{storage_host}/{raw_file_path}"
+
+        return source_file_path
+
+    except Exception as e:
+        logger.error(f"Error in get_file_paths : {str(e)}")
+        raise
+
+
+# COMMAND ----------
+
+
+def ingest_dts_data(
+    spark,
+    logger,
+    catalog,
+    raw_files,
+    source_data_type,
+    workflow_job_id,
+    run_id,
+    task_id,
+    workflow_name,
+    task_name,
+):
+    try:
+        bronze_table_name = get_table_name(catalog, "bronze_zone", DTS_TABLE_NAME)
+        asset_table_name = get_table_name(catalog, "bronze_zone", ASSET_TABLE_NAME)
+        bronze_error_log = get_table_name(catalog, "bronze_zone", ERROR_LOG_TABLE_NAME)
+
+        if load_dts_sm_bronze(
+            spark, logger, raw_files, asset_table_name, bronze_table_name
+        ):
+            logger.info("DTS files ingested.")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "processed_files",
+                raw_files,
+                "raw",
+            )
+        else:
+            logger.error("Error ingesting DTS files")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "error_files",
+                raw_files,
+                "raw",
+            )
+            log_error(
+                spark,
+                logger,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                raw_files,
+                "Error ingesting files",
+                "",
+                bronze_error_log,
+            )
+
+    except Exception as e:
+        logger.error(f"Error in ingest_dts_data() : {str(e)}")
+        raise
+
+
+# COMMAND ----------
+
+
+def ingest_pt_gauge_data(
+    spark,
+    logger,
+    catalog,
+    raw_files,
+    source_data_type,
+    workflow_job_id,
+    run_id,
+    task_id,
+    workflow_name,
+    task_name,
+):
+    try:
+        bronze_table_name = get_table_name(catalog, "bronze_zone", PTGAUGE_TABLE_NAME)
+        bronze_error_log = get_table_name(catalog, "bronze_zone", ERROR_LOG_TABLE_NAME)
+
+        if load_ptgauge_bronze(spark, logger, raw_files, bronze_table_name):
+            logger.info("PT Gauge files ingested.")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "processed_files",
+                raw_files,
+                "raw",
+            )
+        else:
+            logger.error("Error ingesting PT Gauge files")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "error_files",
+                raw_files,
+                "raw",
+            )
+            log_error(
+                spark,
+                logger,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                raw_files,
+                "Error ingesting files",
+                "",
+                bronze_error_log,
+            )
+
+    except Exception as e:
+        logger.error(f"Error in ingest_pt_gauge_data() : {str(e)}")
+        raise
+
+
+# COMMAND ----------
+
+
+def ingest_pt_gauge_electricals_data(
+    spark,
+    logger,
+    catalog,
+    raw_files,
+    source_data_type,
+    workflow_job_id,
+    run_id,
+    task_id,
+    workflow_name,
+    task_name,
+):
+    try:
+        bronze_table_name = get_table_name(
+            catalog, "bronze_zone", PTGAUGEELECTRICALS_TABLE_NAME
+        )
+        bronze_error_log = get_table_name(catalog, "bronze_zone", ERROR_LOG_TABLE_NAME)
+
+        if load_pt_gauge_electrical_bronze(spark, logger, raw_files, bronze_table_name):
+            logger.info("PT Gauge Electricals files ingested.")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "processed_files",
+                raw_files,
+                "raw",
+            )
+        else:
+            logger.error("Error ingesting PT Gauge Electricals files")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "error_files",
+                raw_files,
+                "raw",
+            )
+            log_error(
+                spark,
+                logger,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                raw_files,
+                "Error ingesting files",
+                "",
+                bronze_error_log,
+            )
+
+    except Exception as e:
+        logger.error(f"Error in ingest_pt_gauge_electricals_data : {str(e)}")
+        raise
+
+
+# COMMAND ----------
+
+
+def ingest_das_data(
+    spark,
+    logger,
+    catalog,
+    raw_files,
+    source_data_type,
+    workflow_job_id,
+    run_id,
+    task_id,
+    workflow_name,
+    task_name,
+    source_well_name,
+):
+    try:
+        bronze_table_name = get_table_name(
+            catalog, "bronze_zone", f"das_{source_well_name}"
+        )
+        asset_bronze_table = get_table_name(catalog, "bronze_zone", ASSET_TABLE_NAME)
+        bronze_error_log = get_table_name(catalog, "bronze_zone", ERROR_LOG_TABLE_NAME)
+
+        if load_das_files(
+            spark, logger, raw_files, bronze_table_name, asset_bronze_table
+        ):
+            logger.info("DAS files ingested.")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "processed_files",
+                raw_files,
+                "raw",
+            )
+        else:
+            logger.error("Error ingesting DAS files")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "error_files",
+                raw_files,
+                "raw",
+            )
+            log_error(
+                spark,
+                logger,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                raw_files,
+                "Error ingesting files",
+                "",
+                bronze_error_log,
+            )
+
+    except Exception as e:
+        logger.error(f"Error in ingest_das_data : {str(e)}")
+        raise
+
+
+# COMMAND ----------
+
+
+def ingest_flowmeter_data(
+    spark,
+    logger,
+    catalog,
+    raw_files,
+    workflow_job_id,
+    run_id,
+    task_id,
+    workflow_name,
+    task_name,
+):
+
+    try:
+        data_format = get_task_env("data_format")
+        bronze_error_log = get_table_name(catalog, "bronze_zone", ERROR_LOG_TABLE_NAME)
+
+        if data_format.lower() == "data_as_rows":
+            bronze_table_name = get_table_name(
+                catalog, "bronze_zone", "flowmeter_data_as_rows"
+            )
+
+            if load_flowmeter_data_bronze(spark, logger, raw_files, bronze_table_name):
+                logger.info("Flowmeter row files ingested.")
+                write_to_files_archival_table(
+                    spark,
+                    logger,
+                    catalog,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                    "processed_files",
+                    raw_files,
+                    "raw",
+                )
+            else:
+                logger.error("Error ingesting flowmeter files")
+                write_to_files_archival_table(
+                    spark,
+                    logger,
+                    catalog,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                    "error_files",
+                    raw_files,
+                    "raw",
+                )
+                log_error(
+                    spark,
+                    logger,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                    raw_files,
+                    "Error ingesting files",
+                    "",
+                    bronze_error_log,
+                )
+
+        # elif data_format.lower() == "data_as_columns":
+        #     bronze_table_name = get_table_name(catalog, "bronze_zone", "flowmeter_data_as_columns")
+
+        #     if load_flowmeter_data_bronze(
+        #         spark, logger, raw_files, bronze_table_name
+        #     ):
+        #         logger.info("Flowmeter column files ingested.")
+        #         write_to_files_archival_table(
+        #             spark,
+        #             logger,
+        #             catalog,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             "processed_files",
+        #             raw_files,
+        #             "raw",
+        #         )
+        #     else:
+        #         logger.error("Error ingesting flowmeter files")
+        #         write_to_files_archival_table(
+        #             spark,
+        #             logger,
+        #             catalog,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             "error_files",
+        #             raw_files,
+        #             "raw",
+        #         )
+        #         log_error(
+        #             spark,
+        #             logger,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             raw_files,
+        #             "Error ingesting files",
+        #             "",
+        #             bronze_error_log,
+        #         )
+
+        # elif data_format.lower() == "data_as_files":
+
+        #     source_file_path = raw_files + "*fr_and_p.csv"
+        #     bronze_table_name = get_table_name(catalog, "bronze_zone", "flowmeter_data_as_files_fr_and_p")
+
+        #     if load_flowmeter_data_as_files_bronze(
+        #         spark, logger, raw_files, bronze_table_name
+        #     ):
+        #         logger.info("Flowmeter fr_and_p files ingested.")
+        #         write_to_files_archival_table(
+        #             spark,
+        #             logger,
+        #             catalog,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             "processed_files",
+        #             raw_files,
+        #             "raw",
+        #         )
+        #     else:
+        #         logger.error("Error ingesting flowmeter files")
+        #         write_to_files_archival_table(
+        #             spark,
+        #             logger,
+        #             catalog,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             "error_files",
+        #             raw_files,
+        #             "raw",
+        #         )
+        #         log_error(
+        #             spark,
+        #             logger,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             raw_files,
+        #             "Error ingesting files",
+        #             "",
+        #             bronze_error_log,
+        #         )
+
+        #     source_file_path = raw_files + "*farz.csv"
+        #     bronze_table_name = get_table_name(catalog, "bronze_zone", "flowmeter_data_as_files_farz")
+
+        #     if load_flowmeter_data_as_files_bronze(
+        #         spark, logger, raw_files, bronze_table_name
+        #     ):
+        #         logger.info("Flowmeter farz files ingested.")
+        #         write_to_files_archival_table(
+        #             spark,
+        #             logger,
+        #             catalog,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             "processed_files",
+        #             raw_files,
+        #             "raw",
+        #         )
+        #     else:
+        #         logger.error("Error ingesting flowmeter files")
+        #         write_to_files_archival_table(
+        #             spark,
+        #             logger,
+        #             catalog,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             "error_files",
+        #             raw_files,
+        #             "raw",
+        #         )
+        #         log_error(
+        #             spark,
+        #             logger,
+        #             workflow_job_id,
+        #             run_id,
+        #             task_id,
+        #             workflow_name,
+        #             task_name,
+        #             raw_files,
+        #             "Error ingesting files",
+        #             "",
+        #             bronze_error_log,
+        #         )
+
+    except Exception as e:
+        logger.error(f"Error in ingest_flowmeter_data : {str(e)}")
+        raise
+
+
+# COMMAND ----------
+
+
+def main():
+    try:
+        job_start_timestamp = datetime.now()
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+        app_name = "ips_bronze_main_caller"
+        logger = configure_logger(app_name, date)
+
+        source = IPS_BUCKET
+        source_data_type = get_task_env("source_data_type")
+        workflow_name = get_task_env("workflow_name")
+        task_name = get_task_env("task_name")
+
+        logger.info("Fetch job id, run id and task id...")
+        workflow_job_id, run_id, task_id = get_job_and_run_id()
+        logger.info(
+            f"Value of Job ID: {workflow_job_id} | Run ID: {run_id} | Task ID: {task_id}"
+        )
+
+        catalog = os.getenv("catalog")
+        storage_host = os.getenv("storage_host")
+
+        logger.info("Fetch spark context...")
+        spark = get_spark_context()  # get spark session
+
+        source_file_path = get_file_paths(
+            logger, source, source_data_type, storage_host
+        )
+        bronze_error_log = get_table_name(catalog, "bronze_zone", ERROR_LOG_TABLE_NAME)
+
+        raw_files, error_files = check_file_extension(
+            logger, source_file_path, source_data_type
+        )
+
+        if len(raw_files) > 0:
+            if source_data_type.lower() == DTS:
+                ingest_dts_data(
+                    spark,
+                    logger,
+                    catalog,
+                    raw_files,
+                    source_data_type,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                )
+
+            elif source_data_type.lower() == PTGAUGE_TABLE_NAME:
+                ingest_pt_gauge_data(
+                    spark,
+                    logger,
+                    catalog,
+                    raw_files,
+                    source_data_type,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                )
+
+            elif source_data_type.lower() == PTGAUGEELECTRICALS_TABLE_NAME:
+                ingest_pt_gauge_electricals_data(
+                    spark,
+                    logger,
+                    catalog,
+                    raw_files,
+                    source_data_type,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                )
+
+            elif source_data_type.lower() == DAS:
+                source_well_name = get_task_env("source_well_name")
+                ingest_das_data(
+                    spark,
+                    logger,
+                    catalog,
+                    raw_files,
+                    source_data_type,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                    source_well_name,
+                )
+            elif source_data_type.lower() == FLOWMETER:
+                ingest_flowmeter_data(
+                    spark,
+                    logger,
+                    catalog,
+                    raw_files,
+                    workflow_job_id,
+                    run_id,
+                    task_id,
+                    workflow_name,
+                    task_name,
+                )
+        else:
+            logger.info("No files to ingest...")
+            if source_data_type.lower() == DTS:
+                bronze_table_name = get_table_name(
+                    catalog, "bronze_zone", DTS_TABLE_NAME
+                )
+            elif source_data_type.lower() == PTGAUGE_TABLE_NAME:
+                bronze_table_name = get_table_name(
+                    catalog, "bronze_zone", PTGAUGE_TABLE_NAME
+                )
+            elif source_data_type.lower() == PTGAUGEELECTRICALS_TABLE_NAME:
+                bronze_table_name = get_table_name(
+                    catalog, "bronze_zone", PTGAUGEELECTRICALS_TABLE_NAME
+                )
+            elif source_data_type.lower() == DAS:
+                source_well_name = get_task_env("source_well_name")
+                bronze_table_name = get_table_name(
+                    catalog, "bronze_zone", f"das_{source_well_name}"
+                )
+            elif source_data_type.lower() == FLOWMETER:
+                bronze_table_name = get_table_name(
+                    catalog, "bronze_zone", "flowmeter_data_as_rows"
+                )
+            delete_data_from_bronze(spark, logger, bronze_table_name)
+
+        if len(error_files) > 0:
+            logger.info("Moving erroneous files...")
+            write_to_files_archival_table(
+                spark,
+                logger,
+                catalog,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                "error_files",
+                error_files,
+                "error",
+            )
+            log_error(
+                spark,
+                logger,
+                workflow_job_id,
+                run_id,
+                task_id,
+                workflow_name,
+                task_name,
+                error_files,
+                f"Extension mismatch for {source_data_type}",
+                "",
+                bronze_error_log,
+            )
+        else:
+            logger.info("No erroneous files...")
+
+    except Exception as e:
+        raise
+
+    finally:
+        move_file(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"{storage_host}/logs/{app_name}/{app_name}_{date}.log",
+            LOG_FILE_TYPE,
+        )
+
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    main()  # pragma: no cover
