@@ -1,0 +1,44 @@
+
+def write_and_zip_json_data(
+    logger,
+    json_data,
+    asset_id,
+    device_id,
+    freq_bd_val,
+    epoch_start_time,
+    freq,
+    cloud_zip_file_path,
+):
+    local_file_path = f"/{asset_id}_{freq_bd_val}_{epoch_start_time}_{freq}.json"
+
+    # Construct the local zip file path present in the driver node.
+    zip_file_path = f"/tmp/{asset_id}_{freq_bd_val}_{epoch_start_time}_{freq}.zip"
+
+    # Write the JSON data to a local file
+    with open(local_file_path, "w") as f:
+        f.write(json_data)
+
+    # Create a ZipFile object
+    with zipfile.ZipFile(
+        zip_file_path,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=1,
+    ) as zipf:
+        # Add the file to the zip file
+        zipf.write(local_file_path, arcname=os.path.basename(local_file_path))
+
+    # Remove the local file
+    os.remove(local_file_path)
+
+    logger.info(
+        f"Publishing the file for freq band: {freq_bd_val} and device id : {device_id} and asset_id : {asset_id} to location : {cloud_zip_file_path}"
+    )
+
+    # Write the zip file to ADLS Gen2
+    copy_file(f"file:{zip_file_path}", cloud_zip_file_path)
+
+    # Remove the local zip file
+    os.remove(zip_file_path)
+
+# COMMAND ----------
