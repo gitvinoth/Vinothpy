@@ -1,0 +1,269 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC ##### Job Parameters
+# MAGIC - source_data_type : Describes the type of source file to ingest. E.g. DAS, DTS, PT_GAUGE, FLOWMETER etc.
+# MAGIC
+# MAGIC ##### Environment Variables
+# MAGIC - catalog : Contains the name of the catalog. Changes from tenant to tenant and environment to environment.
+# MAGIC - storage_host : Contains the fully qualified host name where the delta files are persisted.
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/constants
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/archive_files
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/workflow_metadata_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/error_logging_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/databricks/utility_functions
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/dt_load_pt_gauge
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/dt_load_flowmeter
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/dt_load_das
+
+# COMMAND ----------
+
+# MAGIC %run ../etl/dt_load_dts
+
+# COMMAND ----------
+
+import os
+from datetime import datetime
+
+# for on-prem begin
+try:
+    if dbutils:
+        pass
+except NameError:
+    from src.utils.logger import configure_logger
+    from src.etl.dt_load_pt_gauge import (
+        load_pt_gauge_silver,
+        load_pt_gauge_electricals_silver,
+    )
+    from src.utils.error_logging_utility import log_error
+    from src.etl.dt_load_das import load_das_silver
+    from src.etl.dt_load_dts import load_dts_silver
+    from src.etl.dt_load_flowmeter import load_flowmeter_data_as_rows_silver
+    from src.utils.archive_files import move_to_processed_files
+    from src.utils.on_premise.utility_functions import (
+        get_task_env,
+        get_table_name,
+        move_file,
+        get_spark_context,
+    )
+    from src.utils.on_premise.constants import (
+        PTGAUGE_TABLE_NAME,
+        PTGAUGEELECTRICALS_TABLE_NAME,
+        IPS_BUCKET,
+        PTGAUGE_TABLE_NAME,
+        DAS,
+        DTS,
+        DTS_TABLE_NAME,
+        FLOWMETER,
+        LOG_FILE_TYPE,
+        ASSET_TABLE_NAME,
+    )
+
+# COMMAND ----------
+
+def ingest_pt_gauge_silver(
+    spark, logger, catalog, asset_table_name, backfill_window
+):
+    try:
+        bronze_table_name = get_table_name(catalog, "bronze_zone", PTGAUGE_TABLE_NAME)
+        silver_table_name = get_table_name(catalog, "silver_zone", PTGAUGE_TABLE_NAME)
+        if load_pt_gauge_silver(
+            spark, logger, bronze_table_name, asset_table_name, silver_table_name
+        ):
+            logger.info("PT Gauge Data promoted to silver...")
+
+        bronze_table_name = get_table_name(
+            catalog, "bronze_zone", PTGAUGEELECTRICALS_TABLE_NAME
+        )
+        if load_pt_gauge_electricals_silver(
+            spark,
+            logger,
+            bronze_table_name,
+            asset_table_name,
+            silver_table_name,
+            backfill_window,
+        ):
+            logger.info("PT Gauge Electricals Data promoted to silver...")
+    except Exception as e:
+        logger.error(f"Error in ingest_pt_gauge_silver() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def ingest_das_silver(spark, logger, catalog):
+    try:
+        bronze_table = get_task_env("bronze_table_name")  # "das_well_1"
+        silver_table = get_task_env("silver_table_name")
+        bronze_table_name = get_table_name(catalog, "bronze_zone", bronze_table)
+        silver_table_name = get_table_name(catalog, "silver_zone", silver_table)
+        das_frequency_bands_table = get_table_name(
+            catalog, "silver_zone", "das_frequency_bands"
+        )
+
+        if load_das_silver(
+            spark,
+            logger,
+            bronze_table_name,
+            silver_table_name,
+            das_frequency_bands_table,
+        ):
+            logger.info("DAS data loaded to silver...")
+    except Exception as e:
+        logger.error(f"Error in ingest_das_silver() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def ingest_dts_silver(spark, logger, catalog):
+    try:
+        bronze_table = get_task_env("bronze_table_name")  
+        silver_table = get_task_env("silver_table_name")
+        bronze_table_name = get_table_name(catalog, "bronze_zone", bronze_table)
+        silver_table_name = get_table_name(catalog, "silver_zone", silver_table)
+
+
+        if load_dts_silver(
+            spark,
+            logger,
+            bronze_table_name,
+            silver_table_name,
+        ):
+            logger.info("DTS data loaded to silver...")
+    except Exception as e:
+        logger.error(f"Error in ingest_dts_silver() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def ingest_flowmeter_silver(spark, logger, catalog, asset_table_name):
+    try:
+        table = "flowmeter"
+        data_format = get_task_env("data_format")
+        date_format = get_task_env("date_format")
+
+        if data_format.lower() == "data_as_rows":
+            bronze_table_name = get_table_name(
+                catalog, "bronze_zone", "flowmeter_data_as_rows"
+            )
+            silver_table_name = get_table_name(catalog, "silver_zone", f"{table}")
+            if load_flowmeter_data_as_rows_silver(
+                spark,
+                logger,
+                bronze_table_name,
+                asset_table_name,
+                silver_table_name,
+                date_format,
+            ):
+                logger.info("Flowmeter data as rows promoted to silver...")
+
+        # elif data_format.lower() == "data_as_columns":
+        #     bronze_table_name = get_table_name(catalog, "bronze_zone", "flowmeter_data_as_columns")
+        #     silver_table_name = get_table_name(catalog, "silver_zone", f"{table}")
+        #     if load_flowmeter_data_as_columns_silver(
+        #         spark, logger, bronze_table_name, asset_table_name, silver_table_name, date_format
+        #     ):
+        #         logger.info("Flowmeter data as columns promoted to silver...")
+
+        # elif data_format.lower() == "data_as_files":
+        #     bronze_table_name_1 = get_table_name(catalog, "silver_zone", "flowmeter_data_as_files_fr_and_p")
+        #     bronze_table_name_2 = get_table_name(catalog, "silver_zone", "flowmeter_data_as_files_farz")
+        #     silver_table_name = get_table_name(catalog, "silver_zone", f"{table}")
+        #     if load_flowmeter_data_as_files_silver(
+        #         spark,
+        #         logger,
+        #         bronze_table_name_1,
+        #         bronze_table_name_2,
+        #         asset_table_name,
+        #         silver_table_name,
+        #         date_format,
+        #     ):
+        #         logger.info("Flowmeter data as files promoted to silver...")
+    except Exception as e:
+        logger.error(f"Error in ingest_flowmeter_silver() : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+def main():
+    try:
+        app_name = "ips_silver_main_caller"
+        job_start_timestamp = datetime.now()
+        date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+        logger = configure_logger(app_name, date)
+
+        source = IPS_BUCKET
+        source_data_type = get_task_env("source_data_type")
+        backfill_window = int(get_task_env("backfill_window"))
+
+        catalog = os.getenv("catalog")
+        storage_host = os.getenv("storage_host")
+
+        logger.info("Fetch spark context...")
+        spark = get_spark_context()  # new utility func to get spark session
+
+        asset_table_name = get_table_name(catalog, "bronze_zone", ASSET_TABLE_NAME)
+
+        if source_data_type.lower() == PTGAUGE_TABLE_NAME:
+            ingest_pt_gauge_silver(
+                spark, logger, catalog, asset_table_name, backfill_window
+            )
+
+        elif source_data_type.lower() == DAS:
+            ingest_das_silver(spark, logger, catalog)
+
+
+        elif source_data_type.lower() == DTS:
+            ingest_dts_silver(spark, logger, catalog)
+
+
+        elif source_data_type.lower() == FLOWMETER:
+            ingest_flowmeter_silver(spark, logger, catalog, asset_table_name)
+
+    except Exception as e:
+        raise
+    finally:
+        move_file(
+            f"file:/tmp/{app_name}_{date}.log",
+            f"{storage_host}/logs/{app_name}/{app_name}_{date}.log",
+            LOG_FILE_TYPE,
+        )
+
+# COMMAND ----------
+
+if __name__ == "__main__":
+    main()  # pragma: no cover
