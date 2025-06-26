@@ -1,0 +1,50 @@
+asset_bronze = { 'zone': 'bronze_zone', 'table': 'asset' }
+files_archival_table = { 'zone': 'bronze_zone', 'table': 'files_archival_table' }
+rules_bronze = { 'zone': 'bronze_zone', 'table': 'rules' }
+microseismic_bronze = { 'zone' : 'bronze_zone', 'table': 'microseismic_events'}
+microseismic_silver = { 'zone': 'silver_zone', 'table': 'microseismic_events' }
+pt_gauge_bronze = { 'zone' : 'bronze_zone', 'table': 'pt_gauge'}
+pt_gauge_electricals_bronze = { 'zone': 'bronze_zone', 'table': 'pt_gauge_electricals' }
+pt_gauge_silver = { 'zone': 'silver_zone', 'table': 'pt_gauge' }
+pt_gauge_gold = { 'zone': 'gold_zone', 'table': 'pt_gauge' }
+dts_sm_bronze = { 'zone': 'bronze_zone', 'table': 'dts_sm' }
+dts_silver = {'zone': 'silver_zone', 'table': 'dts'}
+rule_execution_run_time = { 'zone': 'bronze_zone', 'table': 'rule_execution_run_time' }
+das_bronze = { 'zone': 'bronze_zone', 'table': 'das' }
+das_silver = { 'zone': 'silver_zone', 'table': 'das' }
+das_frequency_bands = { 'zone': 'silver_zone', 'table': 'das_frequency_bands' }
+flowmeter_silver = { 'zone': 'silver_zone', 'table': 'flowmeter' }
+flowmeter_data_as_rows_bronze = { 'zone': 'bronze_zone', 'table': 'flowmeter_data_as_rows' }
+cw_plume_bronze = { 'zone': 'bronze_zone', 'table': 'cw_plume' }
+cw_spot_monitor_bronze = { 'zone': 'bronze_zone', 'table': 'cw_spot_monitor' }
+cw_spot_monitor_silver = { 'zone': 'silver_zone', 'table': 'cw_spot_monitor' }
+dss_bronze = { 'zone': 'bronze_zone', 'table': 'dss' }
+dss_silver = { 'zone': 'silver_zone', 'table': 'dss' }
+
+task_tables = {
+    "asset_bronze" : [ asset_bronze, files_archival_table ],
+    "rules_bronze" : [ rules_bronze, asset_bronze, files_archival_table ],
+    "microseismic_bronze" : [ microseismic_bronze, asset_bronze, files_archival_table ],
+    "microseismic_silver" : [ microseismic_silver, microseismic_bronze, asset_bronze ],
+    "pt_gauge_bronze": [ pt_gauge_bronze, asset_bronze, files_archival_table],
+    "pt_gauge_electricals_bronze": [ pt_gauge_electricals_bronze, asset_bronze, files_archival_table],
+    "pt_gauge_silver": [ pt_gauge_silver, pt_gauge_bronze, pt_gauge_electricals_bronze, asset_bronze ],
+    "pt_gauge_gold": [ pt_gauge_silver, pt_gauge_gold ],
+    "dts_sm_bronze" : [ dts_sm_bronze, asset_bronze, files_archival_table ],
+    "dts_silver": [ dts_silver],
+    "dts_file_publish": [ dts_sm_bronze ],
+    "microseismic_rule_execution": [ rules_bronze, rule_execution_run_time, microseismic_silver, microseismic_bronze ],
+    "das_bronze" : [ das_bronze, asset_bronze, files_archival_table ],
+    "das_silver" : [ das_silver, das_bronze, asset_bronze, das_frequency_bands ],
+    "das_file_publish": [ das_silver ],
+    "flowmeter_silver": [ flowmeter_silver, flowmeter_data_as_rows_bronze, asset_bronze ],
+    "flowmeter_bronze" : [ flowmeter_data_as_rows_bronze, files_archival_table ],
+    "pt_gauge_rule_execution": [ rules_bronze, rule_execution_run_time, pt_gauge_silver, pt_gauge_bronze, pt_gauge_electricals_bronze],
+    "cw_plume_bronze" : [cw_plume_bronze, asset_bronze, files_archival_table],
+    "cw_spot_monitor_bronze" : [cw_spot_monitor_bronze, asset_bronze, files_archival_table],
+    "cw_spot_monitor_silver" : [cw_spot_monitor_silver, cw_spot_monitor_bronze, asset_bronze],
+    "cw_plume_file_publish" : [cw_plume_bronze],
+    "dss_bronze" : [dss_bronze, asset_bronze, files_archival_table],
+    "dss_silver" : [dss_silver, dss_bronze, asset_bronze],
+    "dss_rule_execution" : [dss_silver, rule_execution_run_time, rules_bronze]
+}
