@@ -1,0 +1,124 @@
+
+name: 'ccus03_dbr_workflow_promote'
+# Controls when the workflow will run
+on:
+  workflow_dispatch:
+     inputs:
+       environment:
+         description: "source_env"
+         required: true
+       project_name:
+         description: "project_name"
+         required: true
+       workflow_file_name:
+         description: "Promote/update workflow file name"
+         required: true      
+       user_group:
+         description: "User AD group"
+         required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs: 
+######################### Work_flow promotion from Dev to QA ############################
+  ccus03_dna_dev:
+    name: update/create the workflow in ${{ inputs.environment}}   
+    if: inputs.environment == 'DEV' 
+    runs-on: [self-hosted, linux, x64, CORDANT-CI-NPEUSrunner]
+    environment: NONPROD
+    env:
+      HOST: https://adb-8916458736949538.18.azuredatabricks.net
+      TOKEN: ${{ secrets.DNA_NONPROD }}
+      API_VERSION: 2.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'      
+      - name: Install dependencies
+        run: |
+          pip install pandas
+          pip install databricks-cli
+          pip install snoop 
+          pip install pyyaml 
+      - name: workflow code execution ${{ inputs.environment}}   
+        run: python3 deploy/src/databricks_workflow.py ${{ inputs.environment}} ${{ inputs.project_name}} ${{ inputs.workflow_file_name}} ${{ inputs.user_group}} 
+             
+  ccus03_dna_qa:
+    name: update/create the workflow in ${{ inputs.environment}}
+    if: inputs.environment == 'QA' 
+    runs-on: [self-hosted, linux, x64, CORDANT-CI-NPEUSrunner] # need to update the runner
+    environment: NONPROD
+    env:
+      HOST: https://adb-8916458736949538.18.azuredatabricks.net
+      TOKEN: ${{ secrets.DNA_NONPROD }}
+      API_VERSION: 2.1 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'      
+      - name: Install dependencies
+        run: |
+          pip install pandas
+          pip install databricks-cli
+          pip install snoop 
+          pip install pyyaml 
+      - name: workflow code execution ${{ inputs.environment}}      
+        run: python3 deploy/src/databricks_workflow.py ${{ inputs.environment}} ${{ inputs.project_name}} ${{ inputs.workflow_file_name}} ${{ inputs.user_group}}          
+
+  ccus03_dna_uat:
+    name: update/create the workflow in ${{ inputs.environment}}
+    if: inputs.environment == 'UAT' 
+    runs-on: [self-hosted, linux, x64, CORDANT-CI-NPEUSrunner] # need to update the runner
+    environment: NONPROD
+    env:
+      HOST: https://adb-8916458736949538.18.azuredatabricks.net
+      TOKEN: ${{ secrets.DNA_NONPROD }}
+      API_VERSION: 2.1 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'      
+      - name: Install dependencies
+        run: |
+          pip install pandas
+          pip install databricks-cli
+          pip install snoop 
+          pip install pyyaml 
+      - name: workflow code execution ${{ inputs.environment}}      
+        run: python3 deploy/src/databricks_workflow.py ${{ inputs.environment}} ${{ inputs.project_name}} ${{ inputs.workflow_file_name}} ${{ inputs.user_group}}   
+
+  preprod_workflow:
+    name: update/create the workflow in ${{ inputs.environment}}
+    if: inputs.environment == 'PREPROD' && github.ref == 'refs/heads/preprod' 
+    runs-on: [self-hosted, linux, x64, CCUS_PPEUSrunner] # we need to add Preprod Git selfhosted runner
+    environment: PREPROD
+    env:
+      HOST: https://adb-2369995688583749.9.azuredatabricks.net #need to Token Host details
+      TOKEN: ${{ secrets.TOKEN }} #Need to add Token details
+      API_VERSION: 2.1 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'      
+      - name: Install dependencies
+        run: |
+          pip install pandas
+          pip install databricks-cli
+          pip install snoop 
+          pip install pyyaml 
+      - name: workflow code execution ${{ inputs.environment}}      
+        run: python3 deploy/src/databricks_workflow.py ${{ inputs.environment}} ${{ inputs.project_name}} ${{ inputs.workflow_file_name}} ${{ inputs.user_group}}
