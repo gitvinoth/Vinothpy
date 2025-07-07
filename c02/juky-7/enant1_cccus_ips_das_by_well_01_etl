@@ -1,0 +1,452 @@
+from airflow import DAG
+from datetime import datetime, timedelta
+from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
+from spark_application_template import generate_template_spec
+from airflow.operators.python import PythonOperator
+import os
+
+def push_run_id(**kwargs):
+        # Retrieve the run_id from the context
+    run_id = kwargs['run_id']
+
+    timestamp_str = run_id.split('__')[-1]  # e.g., "2023-01-01T12:34:56"
+    
+    # Convert to datetime object
+    if run_id.startswith("scheduled__"):
+        dt_object = datetime.strptime(timestamp_str, '%Y-%m-%dT%H:%M:%S%z')
+    else:
+        dt_object = datetime.strptime(timestamp_str, '%Y-%m-%dT%H:%M:%S.%f%z')
+    
+    # Convert to epoch timestamp
+    epoch_timestamp = int(dt_object.timestamp())
+
+
+    # Push it to XCom for later tasks to retrieve
+    kwargs['ti'].xcom_push(key='run_id', value=epoch_timestamp)
+    print(f"Run ID pushed to XCom: {epoch_timestamp}")
+
+def create_dag(dag_instance):
+    well_id = dag_instance["well_id"]
+    source_well_name = dag_instance["source_well_name"]
+    default_args = {
+        'owner': 'BH',
+        'retries': 0,
+        'retry_delay': timedelta(seconds=10)
+    }
+
+    with DAG(
+        dag_id=f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+        default_args=default_args,
+        description='This workflow ingests DAS files',
+        tags=["dd40badc-44a8-4c24-994a-ab80edc83478","das"],
+        start_date=datetime(2024, 12, 15),
+        schedule_interval='0 0 * * 0',
+        catchup=False
+    ) as dag:
+        push_run_id_task = PythonOperator(
+            task_id='push_run_id_task',
+            python_callable=push_run_id,
+            provide_context=True
+        )
+
+        das_bronze_well = SparkKubernetesOperator(
+            task_id=f"das_bronze_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name=f"das_bronze_well_{well_id}",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_bronze_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=4, 
+                executor_memory="4g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "source_data_type": "das",
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "1",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": "",
+                    "source_well_name": source_well_name
+                }
+            )
+        )
+
+        das_archive_files = SparkKubernetesOperator(
+            task_id="das_archive_files",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name=f"das_bronze_{well_id}",
+                main_application_file="local:///opt/spark/python-scripts/src/utils/archive_files_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=4, 
+                executor_memory="4g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "1",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            ),
+            retries=4,
+            retry_delay=timedelta(seconds=5)
+        )
+
+        das_silver_well = SparkKubernetesOperator(
+            task_id=f"das_silver_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name=f"das_silver_well_{well_id}",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_silver_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=4, 
+                executor_memory="4g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "bronze_table_name": f"das_{source_well_name}",
+                    "silver_table_name": f"das_{source_well_name}",
+                    "source_data_type": "das",
+                    "backfill_window": "7200",
+                    "source_well_name": source_well_name,
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "2",
+                    "task_name": f"das_silver_well_{well_id}",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        das_gold_publish_30min_well = SparkKubernetesOperator(
+            task_id=f"das_gold_publish_30min_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_publish",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2, 
+                executor_memory="4g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "source_data_type": "das",
+                    "time_window": "1800",
+                    "sample_size": "30",
+                    "engine_run_frequency": "1800",
+                    "activity_name": "das_file_publish",
+                    "source_well_name": source_well_name,
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "3",
+                    "task_name": f"das_file_publish",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        das_gold_publish_60min_well = SparkKubernetesOperator(
+            task_id=f"das_gold_publish_60min_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_publish",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2, 
+                executor_memory="4g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "source_data_type": "das",
+                    "time_window": "3600",
+                    "sample_size": "30",
+                    "engine_run_frequency": "1800",
+                    "activity_name": "das_file_publish",
+                    "source_well_name": source_well_name,
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "4",
+                    "task_name": f"das_file_publish",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        das_gold_publish_1day_well = SparkKubernetesOperator(
+            task_id=f"das_gold_publish_1day_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_publish",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2, 
+                executor_memory="4g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "source_data_type": "das",
+                    "time_window": "86400",
+                    "sample_size": "30",
+                    "engine_run_frequency": "1800",
+                    "activity_name": "das_file_publish",
+                    "source_well_name": source_well_name,
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "5",
+                    "task_name": f"das_file_publish",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        das_gold_publish_monthly_well = SparkKubernetesOperator(
+            task_id=f"das_gold_publish_monthly_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_publish",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=3, 
+                executor_memory="12g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "source_data_type": "das",
+                    "time_window": "2592000",
+                    "sample_size": "1",
+                    "engine_run_frequency": "1800",
+                    "activity_name": "das_file_publish",
+                    "source_well_name": source_well_name,
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "6",
+                    "task_name": f"das_file_publish",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+            
+        das_gold_publish_weekly_well = SparkKubernetesOperator(
+            task_id=f"das_gold_publish_weekly_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_publish",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2, 
+                executor_memory="4g", 
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "source_data_type": "das",
+                    "time_window": "604800",
+                    "sample_size": "1",
+                    "engine_run_frequency": "1800",
+                    "activity_name": "das_file_publish",
+                    "source_well_name": source_well_name,
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "7",
+                    "task_name": f"das_file_publish",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        file_retention_1day_well = SparkKubernetesOperator(
+            task_id=f"file_retention_1day_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_retention",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2,
+                executor_memory="4g",
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "retention_time_sec": "2851200",
+                    "freq": "1day",
+                    "activity_name": "das_file_retention",
+                    "source_well_name": source_well_name,
+                    "source_data_type": "das",
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "8",
+                    "task_name": f"das_file_retention",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        file_retention_30_mins_well = SparkKubernetesOperator(
+            task_id=f"file_retention_30_mins_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_retention",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2,
+                executor_memory="4g",
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "retention_time_sec": "2676800",
+                    "freq": "30mins",
+                    "activity_name": "das_file_retention",
+                    "source_well_name": source_well_name,
+                    "source_data_type": "das",
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "9",
+                    "task_name": f"das_file_retention",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        file_retention_60_mins_well = SparkKubernetesOperator(
+            task_id=f"file_retention_60_mins_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_retention",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2,
+                executor_memory="4g",
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "retention_time_sec": "2678400",
+                    "freq": "60mins",
+                    "activity_name": "das_file_retention",
+                    "source_well_name": source_well_name,
+                    "source_data_type": "das",
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "10",
+                    "task_name": f"das_file_retention",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        file_retention_monthly_well = SparkKubernetesOperator(
+            task_id=f"file_retention_monthly_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_retention",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2,
+                executor_memory="4g",
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "retention_time_sec": "5270400",
+                    "freq": "1month",
+                    "activity_name": "das_file_retention",
+                    "source_well_name": source_well_name,
+                    "source_data_type": "das",
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "11",
+                    "task_name": f"das_file_retention",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+        file_retention_weekly_well = SparkKubernetesOperator(
+            task_id=f"file_retention_weekly_well_{well_id}",
+            kubernetes_conn_id="kubernetes_default",
+            template_spec=generate_template_spec(
+                task_name="das_file_retention",
+                main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+                driver_cores=1,
+                driver_memory="4g",
+                driver_cores_limit="1200m",
+                executor_cores=2,
+                executor_memory="4g",
+                executor_instances=1,
+                run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+                env_vars={
+                    "retention_time_sec": "3628800",
+                    "freq": "1week",
+                    "activity_name": "das_file_retention",
+                    "source_well_name": source_well_name,
+                    "source_data_type": "das",
+                    "workflow_id": "5",
+                    "workflow_name": f"ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_das_by_{well_id}_etl",
+                    "task_id": "12",
+                    "task_name": f"das_file_retention",
+                    "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                    "catalog": ""
+                }
+            )
+        )
+
+
+        # push_run_id_task >> das_bronze_well_01 
+        # das_bronze_well_01 >> [ das_archive_files, das_silver_well_01 ]
+        # das_silver_well_01 >> [ das_gold_publish_30min_well_01, das_gold_publish_monthly_well_01, das_gold_publish_weekly_well_01]
+        
+        # das_gold_publish_30min_well_01 >> file_retention_30_mins_well_01 >> das_gold_publish_60min_well_01 >> file_retention_60_mins_well_01 >> das_gold_publish_1day_well_01 >> file_retention_1day_well_01
+        # das_gold_publish_weekly_well_01 >> file_retention_weekly_well_01
+        # das_gold_publish_monthly_well_01 >> file_retention_monthly_well_01
+
+        push_run_id_task >> das_bronze_well >> das_archive_files >> das_silver_well >> [das_gold_publish_monthly_well, das_gold_publish_30min_well]
+        das_gold_publish_30min_well >> das_gold_publish_weekly_well >> das_gold_publish_60min_well >> das_gold_publish_1day_well >> file_retention_30_mins_well >> file_retention_monthly_well >> file_retention_weekly_well >> file_retention_60_mins_well >> file_retention_1day_well
+
+dag_instances = []
+
+for i in range(1, 21):
+    well_name = f"well_{i}"
+    dag_instances.append({
+        "well_id": f"well_{i:02d}", 
+        "source_well_name": well_name
+    })
+
+globals().update({
+    dag_instance["well_id"]: create_dag(dag_instance)
+    for dag_instance in dag_instances
+})
+    
+    
