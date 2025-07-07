@@ -1,0 +1,140 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
+from datetime import datetime, timedelta
+
+def push_run_id(**kwargs):
+    run_id = kwargs['run_id']
+    ts = run_id.split("__")[-1]
+    dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%f%z") if '.' in ts else datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S%z")
+    epoch = int(dt.timestamp())
+    kwargs['ti'].xcom_push(key="run_id", value=epoch)
+
+default_args = {
+    'owner': 'bakerhughes',
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+with DAG(
+    dag_id="ccus_dd40badc_44a8_4c24_994a_ab80edc83478_ips_dts_etl",
+    default_args=default_args,
+    schedule_interval="0 0 * * *",
+    start_date=datetime(2024, 12, 15),
+    catchup=False,
+    tags=["ccus", "dts"]
+) as dag:
+
+    push_run_id_task = PythonOperator(
+        task_id="push_run_id_task",
+        python_callable=push_run_id,
+        provide_context=True
+    )
+
+    def create_spark_task(task_id, file, env, cores=2, memory="4g", instances=1):
+        return SparkKubernetesOperator(
+            task_id=task_id,
+            namespace="spark",
+            kubernetes_conn_id="kubernetes_default",
+            application_file="",
+            do_xcom_push=False,
+            template_spec={
+                "type": "SparkApplication",
+                "apiVersion": "sparkoperator.k8s.io/v1beta2",
+                "metadata": {"name": task_id.lower()},
+                "spec": {
+                    "type": "Python",
+                    "mode": "cluster",
+                    "image": "spark:latest",
+                    "mainApplicationFile": file,
+                    "sparkVersion": "3.4.1",
+                    "restartPolicy": {"type": "Never"},
+                    "driver": {
+                        "cores": 1,
+                        "memory": "4g",
+                        "serviceAccount": "spark",
+                        "env": [{"name": k, "value": v} for k, v in env.items()]
+                    },
+                    "executor": {
+                        "cores": cores,
+                        "instances": instances,
+                        "memory": memory,
+                        "env": [{"name": k, "value": v} for k, v in env.items()]
+                    }
+                }
+            }
+        )
+
+    bronze = create_spark_task(
+        "dts_sm_bronze",
+        "local:///opt/spark/python-scripts/src/etl/ips_bronze_main_caller.py",
+        {
+            "source_data_type": "dts",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl_dev",
+            "task_name": "dts_sm_bronze"
+        }
+    )
+
+    archive = create_spark_task(
+        "dts_sm_archive_files",
+        "local:///opt/spark/python-scripts/src/utils/archive_files_main_caller.py",
+        {"task_name": "dts_sm_bronze"}
+    )
+
+    silver = create_spark_task(
+        "dts_sm_silver",
+        "local:///opt/spark/python-scripts/src/etl/ips_silver_main_caller.py",
+        {
+            "bronze_table_name": "dts_sm",
+            "silver_table_name": "dts",
+            "source_data_type": "dts",
+            "backfill_window": "7200"
+        }
+    )
+
+    frequencies = {
+        "30_min": ("1800", "60", "60"),
+        "60_min": ("3600", "60", "120"),
+        "1_day": ("86400", "60", "3600"),
+        "1_week": ("604800", "60", "21600"),
+        "1_month": ("2592000", "60", "86400"),
+    }
+
+    for freq, (time_window, sample_size, bucket_size) in frequencies.items():
+        gold = create_spark_task(
+            f"dts_sm_gold_{freq}",
+            "local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+            {
+                "source_data_type": "dts",
+                "activity_name": "dts_file_publish",
+                "time_window": time_window,
+                "sample_size": sample_size,
+                "engine_run_frequency": "1800"
+            }
+        )
+        summary = create_spark_task(
+            f"dts_sm_gold_summary_{freq}",
+            "local:///opt/spark/python-scripts/src/etl/resample_gold_main_caller.py",
+            {
+                "source_table": "dts",
+                "frequency": "seconds",
+                "columns": "temperature",
+                "partition_cols": "asset_id, depth",
+                "bucket_size": bucket_size
+            }
+        )
+        retention = create_spark_task(
+            f"dts_sm_gold_{freq}_file_retention",
+            "local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+            {
+                "source_data_type": "dts",
+                "activity_name": "dts_file_retention",
+                "retention_time_sec": "2676800",
+                "freq": freq.replace("_", "")
+            }
+        )
+
+        silver >> [gold, summary]
+        gold >> retention
+
+    push_run_id_task >> bronze >> [archive, silver]
