@@ -1,0 +1,404 @@
+---
+DEV:
+  name: ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl_dev
+  tags:
+    dbr_env: DEV
+    dbr_product: CCUS
+    dbr_tenant: dd40badc-44a8-4c24-994a-ab80edc83478
+    dbr_source: IPS
+  email_notifications:
+    on_failure:
+      - saikrishna.s@bakerhughes.com
+      - vinoth.ravi@bakerhughes.com
+    no_alert_for_skipped_runs: false
+  timeout_seconds: 0
+  tasks:
+    - task_key: dts_sm_bronze
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_bronze_main_caller
+        base_parameters:
+          source_data_type: dts
+          workflow_name: ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl_dev
+          task_name: dts_sm_bronze
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_archive_files
+      depends_on:
+        - task_key: dts_sm_bronze
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/utils/archive_files_main_caller
+        base_parameters:
+          task_name: dts_sm_bronze
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_silver
+      depends_on:
+        - task_key: dts_sm_bronze
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_silver_main_caller
+        base_parameters:
+          bronze_table_name: dts_sm
+          silver_table_name: dts
+          backfill_window: "7200"
+          source_data_type: dts
+        source: WORKSPACE
+        job_cluster_key: ccus_ips_dts_etl_cluster
+        timeout_seconds: 0
+        email_notifications: {}
+        notification_settings:
+          no_alert_for_skipped_runs: false
+          no_alert_for_canceled_runs: false
+          alert_on_last_attempt: false
+        webhook_notifications: {}
+    - task_key: dts_sm_gold_1_day
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          activity_name: dts_file_publish
+          time_window: "86400"
+          sample_size: "60"
+          engine_run_frequency: "1800"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_summary_1_day
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/resample_gold_main_caller
+        base_parameters:
+          source_table: dts
+          frequency: seconds
+          columns: temperature
+          partition_cols: asset_id, depth
+          bucket_size: "3600"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}      
+    - task_key: dts_sm_gold_1_day_file_retention
+      depends_on:
+        - task_key: dts_sm_gold_1_day
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          retention_time_sec: "2676800"
+          activity_name: dts_file_retention
+          freq: 1day
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_1_month
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          activity_name: dts_file_publish
+          time_window: "2592000"
+          sample_size: "60"
+          engine_run_frequency: "1800"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_summary_1_month
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/resample_gold_main_caller
+        base_parameters:
+          source_table: dts
+          frequency: seconds
+          columns: temperature
+          partition_cols: asset_id, depth
+          bucket_size: "86400"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}        
+    - task_key: dts_sm_gold_1_month_file_retention
+      depends_on:
+        - task_key: dts_sm_gold_1_month
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          retention_time_sec: "2676800"
+          activity_name: dts_file_retention
+          freq: 1month
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_1_week
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          activity_name: dts_file_publish
+          time_window: "604800"
+          sample_size: "60"
+          engine_run_frequency: "1800"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_summary_1_week
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/resample_gold_main_caller
+        base_parameters:
+          source_table: dts
+          frequency: seconds
+          columns: temperature
+          partition_cols: asset_id, depth
+          bucket_size: "21600"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}        
+    - task_key: dts_sm_gold_1_week_file_retention
+      depends_on:
+        - task_key: dts_sm_gold_1_week
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          retention_time_sec: "2676800"
+          activity_name: dts_file_retention
+          freq: 1week
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_30_min
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          activity_name: dts_file_publish
+          time_window: "1800"
+          sample_size: "60"
+          engine_run_frequency: "1800"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_summary_30_min
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/resample_gold_main_caller
+        base_parameters:
+          source_table: dts
+          frequency: seconds
+          columns: temperature
+          partition_cols: asset_id, depth
+          bucket_size: "60"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}        
+    - task_key: dts_sm_gold_30_mins_file_retention
+      depends_on:
+        - task_key: dts_sm_gold_30_min
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          retention_time_sec: "2676800"
+          activity_name: dts_file_retention
+          freq: 30mins
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_60_min
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          activity_name: dts_file_publish
+          time_window: "3600"
+          sample_size: "60"
+          engine_run_frequency: "1800"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+    - task_key: dts_sm_gold_summary_60_min
+      depends_on:
+        - task_key: dts_sm_silver
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/resample_gold_main_caller
+        base_parameters:
+          source_table: dts
+          frequency: seconds
+          columns: temperature
+          partition_cols: asset_id, depth
+          bucket_size: "120"
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}        
+    - task_key: dts_sm_gold_60_mins_file_retention
+      depends_on:
+        - task_key: dts_sm_gold_60_min
+      run_if: ALL_SUCCESS
+      notebook_task:
+        notebook_path: /Repos/DEV/bh-ccus-data-platform/src/etl/ips_gold_main_caller
+        base_parameters:
+          source_data_type: dts
+          retention_time_sec: "2676800"
+          activity_name: dts_file_retention
+          freq: 60mins
+        source: WORKSPACE
+      job_cluster_key: ccus_ips_dts_etl_cluster
+      timeout_seconds: 0
+      email_notifications: {}
+      notification_settings:
+        no_alert_for_skipped_runs: false
+        no_alert_for_canceled_runs: false
+        alert_on_last_attempt: false
+      webhook_notifications: {}
+  job_clusters:
+    spark_version: 13.3.x-scala2.12
+    azure_attributes:
+      first_on_demand: 1
+      availability: SPOT_WITH_FALLBACK_AZURE
+      spot_bid_max_price: 100
+    node_type_id: Standard_DS3_v2
+    custom_tags:
+      dbr_env: dev
+      dbr_product: ccus
+    spark_env_vars:
+      catalog: ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03
+      storage_host: abfss://ccus-dd40badc-44a8-4c24-994a-ab80edc83478-dev@stcoreusnp003d.dfs.core.windows.net
+    enable_elastic_disk: true
+    init_scripts:
+      - workspace:
+          destination: /Repos/DEV/bh-ccus-data-platform/src/resources/init_script.in
+    runtime_engine: STANDARD
+    num_workers: 2
+    job_cluster_name: ccus_ips_dts_etl_cluster
+  schedule:
+    quartz_cron_expression: 55 0/30 * * * ?
+    timezone_id: UTC
+    pause_status: PAUSED
+  max_concurrent_runs: 1
