@@ -1,18 +1,27 @@
 # Databricks notebook source
-from delta import DeltaTable
-from itertools import product
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
 from pyspark.sql import DataFrame
-from datetime import datetime
 from pyspark.sql.functions import (
-    from_unixtime,
     col,
-    date_format,
-    date_trunc,
-    first,
-    to_timestamp,
+    floor,
     unix_timestamp,
-    window,
+    current_timestamp,
+    date_trunc,
+    lit,
+    struct,
+    min,
+    max,
+    count,
+    sum as _sum,
 )
+from delta.tables import DeltaTable
 
 # COMMAND ----------
 
@@ -21,116 +30,179 @@ try:
         pass # pragma: no cover
 except NameError:
     from src.utils.write_utility import write_table
-    from src.utils.read_utility import read_delta_table
+    from src.utils.read_utility import read_delta_table, read_table
 
 # COMMAND ----------
 
-def generate_resample_dts_query_by_bucket(
-    logger,
-    source_table_name: str,
-    bucket_size_seconds: int,
-) -> str:
+def dts_bucket(df: DataFrame, bucket_size_seconds: int) -> DataFrame:
     """
-    Generates a SQL query that buckets DTS sensor data based on time intervals
-    and computes: sum, count, min, max — and includes min/max timestamps.
+    Filters for current date DTS data and buckets by epoch time.
     """
-    if not isinstance(bucket_size_seconds, int):
-        logger.error("bucket_size_seconds must be an integer")
-        raise TypeError("bucket_size_seconds must be an integer")   
     try:
-        query = f"""
-        WITH raw AS (
-            SELECT
-                asset_id,
-                depth,
-                timestamp,
-                FLOOR(timestamp / {bucket_size_seconds}) * {bucket_size_seconds} AS bucket_start,
-                temperature
-            FROM {source_table_name}
-            WHERE timestamp >= UNIX_TIMESTAMP(CURRENT_DATE())
-            AND timestamp <= UNIX_TIMESTAMP(current_timestamp())
-            AND asset_id IS NOT NULL
-            AND depth IS NOT NULL
-            AND temperature IS NOT NULL
-        ),
-        agg AS (
-            SELECT
-                asset_id,
-                depth,
-                bucket_start AS timestamp,
-                SUM(temperature) AS temperature_sum,
-                COUNT(temperature) AS temperature_count,
-                MIN(temperature) AS temperature_min,
-                MAX(temperature) AS temperature_max,
-                MIN_BY(timestamp, temperature) AS temperature_min_ts,
-                MAX_BY(timestamp, temperature) AS temperature_max_ts
-            FROM raw
-            GROUP BY asset_id, depth, bucket_start
-        ),
-        unioned AS (
-            SELECT asset_id, 'temperature_sum' AS parameter, timestamp, depth, temperature_sum AS value FROM agg
-            UNION ALL
-            SELECT asset_id, 'temperature_count' AS parameter, timestamp, depth, temperature_count AS value FROM agg
-            UNION ALL
-            SELECT asset_id, 'temperature_min' AS parameter, temperature_min_ts AS timestamp, depth, temperature_min AS value FROM agg
-            UNION ALL
-            SELECT asset_id, 'temperature_max' AS parameter, temperature_max_ts AS timestamp, depth, temperature_max AS value FROM agg
+        current_day_start = unix_timestamp(date_trunc("DAY", current_timestamp()))
+        current_ts = unix_timestamp(current_timestamp())
+        return df.filter(
+            col("asset_id").isNotNull()
+            & col("depth").isNotNull()
+            & col("temperature").isNotNull()
+            & (col("timestamp") >= current_day_start)
+            & (col("timestamp") <= current_ts)
+        ).withColumn(
+            "bucket_start",
+            floor(col("timestamp") / bucket_size_seconds) * bucket_size_seconds,
         )
-        SELECT DISTINCT *
-        FROM unioned
-        ORDER BY asset_id, depth, timestamp
-        """
-        logger.info(f"[generate_resample_dts_query_by_bucket] Query with min/max: {query}")
-        return query
     except Exception as e:
-        logger.error(f"Error generating DTS resample query: {str(e)}")
+        raise RuntimeError(f"Error in dts_bucket: {e}")
+
+# COMMAND ----------
+
+def dts_get_min_max(spark, logger, bucketed_df: DataFrame) -> DataFrame:
+    try:
+        logger.info("Creating DTS min/max DataFrame...")
+        min_max_df = (
+            bucketed_df.groupBy("asset_id", "depth", "bucket_start")
+            .agg(
+                min(struct(col("temperature"), col("timestamp"))).alias("min_temp_struct"),
+                max(struct(col("temperature"), col("timestamp"))).alias("max_temp_struct")
+            )
+            .select(
+                "asset_id",
+                "depth",
+                "bucket_start",
+                col("min_temp_struct.temperature").alias("min_temperature"),
+                col("min_temp_struct.timestamp").alias("min_temperature_ts"),
+                col("max_temp_struct.temperature").alias("max_temperature"),
+                col("max_temp_struct.timestamp").alias("max_temperature_ts"),
+            )
+        )
+        return min_max_df
+    except Exception as e:
+        logger.error(f"Error in dts_get_min_max(): {e}")
+        raise
+
+# COMMAND ----------
+
+def dts_get_sum(spark, logger, bucketed_df: DataFrame) -> DataFrame:
+    try:
+        logger.info("Creating DTS sum DataFrame...")
+        sum_df = (
+            bucketed_df.groupBy("asset_id", "depth", "bucket_start")
+            .agg(_sum("temperature").alias("sum_temperature"))
+        )
+        return sum_df
+    except Exception as e:
+        logger.error(f"Error in dts_get_sum(): {e}")
+        raise
+
+# COMMAND ----------
+
+def dts_get_count(spark, logger, bucketed_df: DataFrame) -> DataFrame:
+    try:
+        logger.info("Creating DTS count DataFrame...")
+        count_df = (
+            bucketed_df.groupBy("asset_id", "depth", "bucket_start")
+            .agg(count("temperature").alias("count_temperature"))
+        )
+        return count_df
+    except Exception as e:
+        logger.error(f"Error in dts_get_count(): {e}")
+        raise
+
+# COMMAND ----------
+
+def dts_get_gold(spark, logger, min_max_df, sum_df, count_df) -> DataFrame:
+    try:
+        logger.info("Constructing gold DTS DataFrame...")
+        min_temp_df = min_max_df.select(
+            "asset_id", "depth",
+            lit("temperature_min").alias("parameter"),
+            col("min_temperature_ts").cast("long").alias("timestamp"),
+            col("min_temperature").alias("value")
+        )
+        max_temp_df = min_max_df.select(
+            "asset_id", "depth",
+            lit("temperature_max").alias("parameter"),
+            col("max_temperature_ts").cast("long").alias("timestamp"),
+            col("max_temperature").alias("value")
+        )
+        sum_temp_df = sum_df.select(
+            "asset_id", "depth",
+            lit("temperature_sum").alias("parameter"),
+            col("bucket_start").cast("long").alias("timestamp"),
+            col("sum_temperature").alias("value")
+        )
+        count_temp_df = count_df.select(
+            "asset_id", "depth",
+            lit("temperature_count").alias("parameter"),
+            col("bucket_start").cast("long").alias("timestamp"),
+            col("count_temperature").alias("value")
+        )
+        gold_df = (
+            min_temp_df
+            .union(max_temp_df)
+            .union(sum_temp_df)
+            .union(count_temp_df)
+        ).select("asset_id", "parameter", "timestamp", "depth", "value")
+        logger.info("Created DTS gold_df successfully.")
+        return gold_df
+    except Exception as e:
+        logger.error(f"Error in dts_get_gold(): {e}")
         raise
 
 # COMMAND ----------
 
 def resample_gold_dts(
-   spark,
-   logger,
-   source_table_name: str,
-   partition_cols: str,
-   destination_table_name: str,
-   bucket_size_seconds: int = 3600
+    spark,
+    logger,
+    dts_silver_table: str,
+    partition_cols: str,
+    dts_gold_table: str,
+    bucket_size_seconds: int = 3600
 ) -> bool:
-   """
-   Executes DTS resampling by aggregating into fixed-size time buckets
-   (e.g., 60s, 120s, 3600s, etc.) and writes the result into a gold Delta table.
-   Generates one record for each parameter (temperature_sum and temperature_count)
-   per (asset_id, depth, bucket timestamp).
-   """
-   try:
-       query = generate_resample_dts_query_by_bucket(
-           logger=logger,
-           source_table_name=source_table_name,
-           bucket_size_seconds=bucket_size_seconds
-       )
-       if query:
-           resampled_df = spark.sql(query)
-           dts_gold_table = read_delta_table(spark, logger, destination_table_name)
-           (
-               dts_gold_table.alias("target")
-               .merge(
-                   resampled_df.alias("source"),
-                   """
-                   target.asset_id = source.asset_id AND
-                   target.parameter = source.parameter AND
-                   target.timestamp = source.timestamp AND
-                   target.depth = source.depth
-                   """
-               )
-               .whenMatchedUpdate(set={"value": "source.value"})
-               .whenNotMatchedInsertAll()
-               .execute()
-           )
-           logger.info(f"[resample_gold_dts] Merge complete → {destination_table_name}")
-           return True
-       else:
-           logger.warning("[resample_gold_dts] Empty query generated.")
-           return False
-   except Exception as e:
-       logger.error(f"Error in resample_gold_dts: {str(e)}")
-       raise
+    """
+    Modular DTS resampling with Delta Lake MERGE into gold table.
+    Includes min/max/sum/count metrics per (asset_id, depth, bucket).
+    """
+    try:
+        # Step 1: Read Silver
+        dts_df = read_table(spark, logger, dts_silver_table)
+        if (dts_df is None) or (dts_df.count() == 0):
+            logger.warning(f"No data found in {dts_silver_table}")
+            return False
+
+        # Step 2: Bucket + Aggregations
+        bucketed_df = dts_bucket(dts_df, bucket_size_seconds)
+        min_max_df = dts_get_min_max(spark, logger, bucketed_df)
+        sum_df = dts_get_sum(spark, logger, bucketed_df)
+        count_df = dts_get_count(spark, logger, bucketed_df)
+
+        # Step 3: Compose Gold Table Rows
+        gold_df = dts_get_gold(spark, logger, min_max_df, sum_df, count_df)
+        if gold_df.rdd.isEmpty():
+            logger.info("Gold DataFrame is empty after aggregations.")
+            return False
+
+        # Step 4: Perform MERGE into destination table
+        logger.info(f"Merging into Delta table: {dts_gold_table}")
+        delta_table = DeltaTable.forName(spark, dts_gold_table)
+        (
+            delta_table.alias("target")
+            .merge(
+                gold_df.alias("source"),
+                """
+                target.asset_id = source.asset_id AND
+                target.parameter = source.parameter AND
+                target.timestamp = source.timestamp AND
+                target.depth = source.depth
+                """
+            )
+            .whenMatchedUpdate(set={"value": "source.value"})
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+        logger.info("Delta table merge complete.")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in resample_load_dts_data_summarize: {e}")
+        raise
