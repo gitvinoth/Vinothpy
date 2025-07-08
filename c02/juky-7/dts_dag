@@ -1,21 +1,16 @@
 import os
 from airflow import DAG
 from datetime import datetime, timedelta
-from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import (
-    SparkKubernetesOperator,
-)
+from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator
 from airflow.operators.python import PythonOperator
 from spark_application_template import generate_template_spec
 
 # Constants
-
 workflow_id = "5"
 workflow_name = "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl"
 storage_host = "ccus-dd40badc-44a8-4c24-994a-ab80edc83478"
 catalog = ""
 source_data_type = "dts"
-
-# push_run_id logic
 
 
 def push_run_id(**kwargs):
@@ -25,32 +20,26 @@ def push_run_id(**kwargs):
         dt_object = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S%z")
     except ValueError:
         dt_object = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S.%f%z")
-    # Convert datetime object to epoch timestamp
     epoch_timestamp = int(dt_object.timestamp())
     kwargs["ti"].xcom_push(key="run_id", value=epoch_timestamp)
     print(f"Run ID pushed to XCom: {epoch_timestamp}")
 
 
-# DAG Definition
-
 default_args = {"owner": "BH", "retries": 0, "retry_delay": timedelta(minutes=2)}
-
 with DAG(
     dag_id=workflow_name,
     default_args=default_args,
-    description="This workflow ingest DTS files",
+    description="This workflow ingests DTS files",
     schedule_interval="0 0 * * 0",
     start_date=datetime(2024, 12, 15),
     catchup=False,
     tags=["dts", "ccus"],
 ) as dag:
-
     push_run_id_task = PythonOperator(
         task_id="push_run_id_task",
         python_callable=push_run_id,
         provide_context=True,
     )
-
     dts_bronze = SparkKubernetesOperator(
         task_id="dts_bronze",
         kubernetes_conn_id="kubernetes_default",
@@ -75,7 +64,6 @@ with DAG(
             },
         ),
     )
-
     dts_archive_files = SparkKubernetesOperator(
         task_id="dts_archive_files",
         kubernetes_conn_id="kubernetes_default",
@@ -99,7 +87,6 @@ with DAG(
             },
         ),
     )
-
     dts_silver = SparkKubernetesOperator(
         task_id="dts_silver",
         kubernetes_conn_id="kubernetes_default",
@@ -127,162 +114,292 @@ with DAG(
             },
         ),
     )
+dts_gold_30min = SparkKubernetesOperator(
+    task_id="dts_gold_30min",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_publish_30min",
+        main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+        driver_cores=1,
+        driver_memory="4g",
+        driver_cores_limit="1200m",
+        executor_cores=2,
+        executor_memory="4g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "1800",
+            "sample_size": "30",
+            "engine_run_frequency": "1800",
+            "activity_name": "dts_file_publish",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "4",
+            "task_name": "dts_file_publish_30min",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
+dts_retention_30min = SparkKubernetesOperator(
+    task_id="dts_retention_30min",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_retention_30min",
+        main_application_file="local:///opt/spark/python-scripts/src/retention/dts_retention_main_caller.py",
+        driver_cores=1,
+        driver_memory="2g",
+        driver_cores_limit="1000m",
+        executor_cores=1,
+        executor_memory="2g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "1800",
+            "activity_name": "dts_file_retention",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "9",
+            "task_name": "dts_file_retention_30min",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
 
-    # === GOLD TASKS ===
 
-    dts_gold_30min = SparkKubernetesOperator(
-        task_id="dts_gold_30min",
-        kubernetes_conn_id="kubernetes_default",
-        template_spec=generate_template_spec(
-            task_name="dts_file_publish_30min",
-            main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
-            driver_cores=1,
-            driver_memory="4g",
-            driver_cores_limit="1200m",
-            executor_cores=2,
-            executor_memory="4g",
-            executor_instances=1,
-            run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
-            env_vars={
-                "source_data_type": source_data_type,
-                "time_window": "1800",
-                "sample_size": "30",
-                "engine_run_frequency": "1800",
-                "activity_name": "dts_file_publish",
-                "workflow_id": workflow_id,
-                "workflow_name": workflow_name,
-                "task_id": "4",
-                "task_name": "dts_file_publish_30min",
-                "storage_host": storage_host,
-                "catalog": catalog,
-            },
-        ),
-    )
+dts_gold_60min = SparkKubernetesOperator(
+    task_id="dts_gold_60min",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_publish_60min",
+        main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+        driver_cores=1,
+        driver_memory="4g",
+        driver_cores_limit="1200m",
+        executor_cores=2,
+        executor_memory="4g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "3600",
+            "sample_size": "30",
+            "engine_run_frequency": "1800",
+            "activity_name": "dts_file_publish",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "5",
+            "task_name": "dts_file_publish_60min",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
 
-    dts_gold_60min = SparkKubernetesOperator(
-        task_id="dts_gold_60min",
-        kubernetes_conn_id="kubernetes_default",
-        template_spec=generate_template_spec(
-            task_name="dts_file_publish_60min",
-            main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
-            driver_cores=1,
-            driver_memory="4g",
-            driver_cores_limit="1200m",
-            executor_cores=2,
-            executor_memory="4g",
-            executor_instances=1,
-            run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
-            env_vars={
-                "source_data_type": source_data_type,
-                "time_window": "3600",
-                "sample_size": "30",
-                "engine_run_frequency": "1800",
-                "activity_name": "dts_file_publish",
-                "workflow_id": workflow_id,
-                "workflow_name": workflow_name,
-                "task_id": "5",
-                "task_name": "dts_file_publish_60min",
-                "storage_host": storage_host,
-                "catalog": catalog,
-            },
-        ),
-    )
+dts_retention_60min = SparkKubernetesOperator(
+    task_id="dts_retention_60min",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_retention_60min",
+        main_application_file="local:///opt/spark/python-scripts/src/retention/dts_retention_main_caller.py",
+        driver_cores=1,
+        driver_memory="2g",
+        driver_cores_limit="1000m",
+        executor_cores=1,
+        executor_memory="2g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "3600",
+            "activity_name": "dts_file_retention",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "10",
+            "task_name": "dts_file_retention_60min",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
 
-    dts_gold_1day = SparkKubernetesOperator(
-        task_id="dts_gold_1day",
-        kubernetes_conn_id="kubernetes_default",
-        template_spec=generate_template_spec(
-            task_name="dts_file_publish_1day",
-            main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
-            driver_cores=1,
-            driver_memory="4g",
-            driver_cores_limit="1200m",
-            executor_cores=2,
-            executor_memory="4g",
-            executor_instances=1,
-            run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
-            env_vars={
-                "source_data_type": source_data_type,
-                "time_window": "86400",
-                "sample_size": "30",
-                "engine_run_frequency": "1800",
-                "activity_name": "dts_file_publish",
-                "workflow_id": workflow_id,
-                "workflow_name": workflow_name,
-                "task_id": "6",
-                "task_name": "dts_file_publish_1day",
-                "storage_host": storage_host,
-                "catalog": catalog,
-            },
-        ),
-    )
+dts_gold_1day = SparkKubernetesOperator(
+    task_id="dts_gold_1day",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_publish_1day",
+        main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+        driver_cores=1,
+        driver_memory="4g",
+        driver_cores_limit="1200m",
+        executor_cores=2,
+        executor_memory="4g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "86400",
+            "sample_size": "30",
+            "engine_run_frequency": "1800",
+            "activity_name": "dts_file_publish",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "6",
+            "task_name": "dts_file_publish_1day",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
+dts_retention_1day = SparkKubernetesOperator(
+    task_id="dts_retention_1day",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_retention_1day",
+        main_application_file="local:///opt/spark/python-scripts/src/retention/dts_retention_main_caller.py",
+        driver_cores=1,
+        driver_memory="2g",
+        driver_cores_limit="1000m",
+        executor_cores=1,
+        executor_memory="2g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "86400",
+            "activity_name": "dts_file_retention",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "11",
+            "task_name": "dts_file_retention_1day",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
 
-    dts_gold_1week = SparkKubernetesOperator(
-        task_id="dts_gold_1week",
-        kubernetes_conn_id="kubernetes_default",
-        template_spec=generate_template_spec(
-            task_name="dts_file_publish_1week",
-            main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
-            driver_cores=1,
-            driver_memory="4g",
-            driver_cores_limit="1200m",
-            executor_cores=2,
-            executor_memory="4g",
-            executor_instances=1,
-            run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
-            env_vars={
-                "source_data_type": source_data_type,
-                "time_window": "604800",
-                "sample_size": "1",
-                "engine_run_frequency": "1800",
-                "activity_name": "dts_file_publish",
-                "workflow_id": workflow_id,
-                "workflow_name": workflow_name,
-                "task_id": "7",
-                "task_name": "dts_file_publish_1week",
-                "storage_host": storage_host,
-                "catalog": catalog,
-            },
-        ),
-    )
+dts_gold_1week = SparkKubernetesOperator(
+    task_id="dts_gold_1week",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_publish_1week",
+        main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+        driver_cores=1,
+        driver_memory="4g",
+        driver_cores_limit="1200m",
+        executor_cores=2,
+        executor_memory="4g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "604800",
+            "sample_size": "1",
+            "engine_run_frequency": "1800",
+            "activity_name": "dts_file_publish",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "7",
+            "task_name": "dts_file_publish_1week",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
+dts_retention_1week = SparkKubernetesOperator(
+    task_id="dts_retention_1week",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_retention_1week",
+        main_application_file="local:///opt/spark/python-scripts/src/retention/dts_retention_main_caller.py",
+        driver_cores=1,
+        driver_memory="2g",
+        driver_cores_limit="1000m",
+        executor_cores=1,
+        executor_memory="2g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "604800",
+            "activity_name": "dts_file_retention",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "12",
+            "task_name": "dts_file_retention_1week",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
+dts_gold_1month = SparkKubernetesOperator(
+    task_id="dts_gold_1month",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_publish_1month",
+        main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
+        driver_cores=1,
+        driver_memory="4g",
+        driver_cores_limit="1200m",
+        executor_cores=2,
+        executor_memory="12g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "2592000",
+            "sample_size": "1",
+            "engine_run_frequency": "1800",
+            "activity_name": "dts_file_publish",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "8",
+            "task_name": "dts_file_publish_1month",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
+dts_retention_1month = SparkKubernetesOperator(
+    task_id="dts_retention_1month",
+    kubernetes_conn_id="kubernetes_default",
+    template_spec=generate_template_spec(
+        task_name="dts_file_retention_1month",
+        main_application_file="local:///opt/spark/python-scripts/src/retention/dts_retention_main_caller.py",
+        driver_cores=1,
+        driver_memory="2g",
+        driver_cores_limit="1000m",
+        executor_cores=1,
+        executor_memory="2g",
+        executor_instances=1,
+        run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+        env_vars={
+            "source_data_type": "dts",
+            "time_window": "2592000",
+            "activity_name": "dts_file_retention",
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "task_id": "13",
+            "task_name": "dts_file_retention_1month",
+            "storage_host": storage_host,
+            "catalog": catalog,
+        },
+    ),
+)
 
-    dts_gold_1month = SparkKubernetesOperator(
-        task_id="dts_gold_1month",
-        kubernetes_conn_id="kubernetes_default",
-        template_spec=generate_template_spec(
-            task_name="dts_file_publish_1month",
-            main_application_file="local:///opt/spark/python-scripts/src/etl/ips_gold_main_caller.py",
-            driver_cores=1,
-            driver_memory="4g",
-            driver_cores_limit="1200m",
-            executor_cores=2,
-            executor_memory="12g",
-            executor_instances=1,
-            run_id="{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
-            env_vars={
-                "source_data_type": source_data_type,
-                "time_window": "2592000",
-                "sample_size": "1",
-                "engine_run_frequency": "1800",
-                "activity_name": "dts_file_publish",
-                "workflow_id": workflow_id,
-                "workflow_name": workflow_name,
-                "task_id": "8",
-                "task_name": "dts_file_publish_1month",
-                "storage_host": storage_host,
-                "catalog": catalog,
-            },
-        ),
-    )
-
-    # === Dependencies ===
-
-    push_run_id_task >> dts_bronze >> dts_archive_files >> dts_silver
-
-    dts_silver >> [
-        dts_gold_30min,
-        dts_gold_60min,
-        dts_gold_1day,
-        dts_gold_1week,
-        dts_gold_1month,
-    ]
+push_run_id_task >> dts_bronze >> dts_archive_files >> dts_silver
+dts_silver >> [
+    dts_gold_30min,
+    dts_gold_60min,
+    dts_gold_1day,
+    dts_gold_1week,
+    dts_gold_1month,
+]
+dts_gold_30min >> dts_retention_30min
+dts_gold_60min >> dts_retention_60min
+dts_gold_1day >> dts_retention_1day
+dts_gold_1week >> dts_retention_1week
+dts_gold_1month >> dts_retention_1month
