@@ -1,0 +1,161 @@
+import pytest
+from unittest.mock import Mock, patch, MagicMock
+from src.etl import load_resample_gold_dts
+
+# --- generate_resample_dts_query_by_bucket tests ---
+
+def test_generate_resample_dts_query_by_bucket_valid():
+    logger = Mock()
+    table = "db.schema.table"
+    bucket = 3600
+
+    result = load_resample_gold_dts.generate_resample_dts_query_by_bucket(logger, table, bucket)
+    assert f"FLOOR(timestamp / {bucket}) * {bucket}" in result
+    assert table in result
+    assert "temperature_sum" in result
+    assert "temperature_min" in result
+    assert "temperature_max" in result
+    assert "MIN_BY" in result
+    assert "MAX_BY" in result
+    logger.info.assert_called_once()
+
+def test_generate_resample_dts_query_by_bucket_bad_bucket():
+    logger = Mock()
+    # Pass a string that can't be interpolated as int
+    with pytest.raises(TypeError):
+        load_resample_gold_dts.generate_resample_dts_query_by_bucket(logger, "table", "not_an_integer")
+    logger.error.assert_called()
+
+def test_generate_resample_dts_query_by_bucket_logger_exception():
+    # Simulate logger raising inside except
+    class FailingLogger:
+        def info(self, *a, **k): pass
+        def error(self, *a, **k): raise RuntimeError("fail logger error")
+    with pytest.raises(RuntimeError):
+        try:
+            load_resample_gold_dts.generate_resample_dts_query_by_bucket(FailingLogger(), "table", "not_an_integer")
+        except TypeError:
+            # The logger.error should then raise
+            raise
+
+# --- resample_gold_dts tests ---
+
+@patch("src.etl.load_resample_gold_dts.generate_resample_dts_query_by_bucket")
+@patch("src.etl.load_resample_gold_dts.read_delta_table")
+def test_resample_gold_dts_happy_path(mock_read_delta_table, mock_generate_query):
+    spark = MagicMock()
+    logger = Mock()
+    source_table = "my_source"
+    dest_table = "my_dest"
+    partition_cols = "asset_id,depth"
+    bucket_size = 60
+
+    query = "SELECT * FROM something"
+    mock_generate_query.return_value = query
+
+    mock_df = MagicMock()
+    spark.sql.return_value = mock_df
+
+    mock_target = MagicMock()
+    mock_merge = MagicMock()
+    mock_target.alias.return_value = mock_target
+    mock_target.merge.return_value = mock_merge
+    mock_merge.whenMatchedUpdateAll.return_value = mock_merge
+    mock_merge.whenNotMatchedInsertAll.return_value = mock_merge
+    mock_merge.execute.return_value = None
+
+    mock_read_delta_table.return_value = mock_target
+
+    result = load_resample_gold_dts.resample_gold_dts(
+        spark,
+        logger,
+        source_table,
+        partition_cols,
+        dest_table,
+        bucket_size
+    )
+
+    assert result is True
+    spark.sql.assert_called_once_with(query)
+    logger.info.assert_called()
+    mock_merge.execute.assert_called_once()
+
+@patch("src.etl.load_resample_gold_dts.generate_resample_dts_query_by_bucket")
+@patch("src.etl.load_resample_gold_dts.read_delta_table")
+def test_resample_gold_dts_empty_query(mock_read_delta_table, mock_generate_query):
+    spark = MagicMock()
+    logger = Mock()
+    source_table = "my_source"
+    dest_table = "my_dest"
+    partition_cols = "asset_id,depth"
+    bucket_size = 60
+
+    mock_generate_query.return_value = ""
+
+    result = load_resample_gold_dts.resample_gold_dts(
+        spark,
+        logger,
+        source_table,
+        partition_cols,
+        dest_table,
+        bucket_size
+    )
+    assert result is False
+    logger.warning.assert_called()
+
+@patch("src.etl.load_resample_gold_dts.generate_resample_dts_query_by_bucket")
+@patch("src.etl.load_resample_gold_dts.read_delta_table")
+def test_resample_gold_dts_generate_query_raises(mock_read_delta_table, mock_generate_query):
+    spark = MagicMock()
+    logger = Mock()
+    source_table = "my_source"
+    dest_table = "my_dest"
+    partition_cols = "asset_id,depth"
+    bucket_size = 60
+
+    mock_generate_query.side_effect = Exception("fail!")
+
+    with pytest.raises(Exception):
+        load_resample_gold_dts.resample_gold_dts(
+            spark,
+            logger,
+            source_table,
+            partition_cols,
+            dest_table,
+            bucket_size
+        )
+    logger.error.assert_called()
+
+@patch("src.etl.load_resample_gold_dts.generate_resample_dts_query_by_bucket")
+@patch("src.etl.load_resample_gold_dts.read_delta_table")
+def test_resample_gold_dts_merge_raises(mock_read_delta_table, mock_generate_query):
+    spark = MagicMock()
+    logger = Mock()
+    source_table = "my_source"
+    dest_table = "my_dest"
+    partition_cols = "asset_id,depth"
+    bucket_size = 60
+
+    mock_generate_query.return_value = "SELECT * FROM foo"
+    mock_df = MagicMock()
+    spark.sql.return_value = mock_df
+
+    mock_target = MagicMock()
+    mock_merge = MagicMock()
+    mock_target.alias.return_value = mock_target
+    mock_target.merge.return_value = mock_merge
+    mock_merge.whenMatchedUpdateAll.return_value = mock_merge
+    mock_merge.whenNotMatchedInsertAll.return_value = mock_merge
+    mock_merge.execute.side_effect = Exception("merge fail")
+    mock_read_delta_table.return_value = mock_target
+
+    with pytest.raises(Exception):
+        load_resample_gold_dts.resample_gold_dts(
+            spark,
+            logger,
+            source_table,
+            partition_cols,
+            dest_table,
+            bucket_size
+        )
+    logger.error.assert_called()
