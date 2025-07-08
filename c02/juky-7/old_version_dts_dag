@@ -1,0 +1,499 @@
+import os
+from airflow import DAG # type: ignore
+from datetime import datetime, timedelta
+from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator # type: ignore
+from spark_application_template import generate_template_spec
+from push_run_id_template import push_run_id
+from airflow.operators.python import PythonOperator # type: ignore
+
+default_args = {
+    'owner': 'BH',
+    'retries': 0,
+    'retry_delay': timedelta(minutes=2)
+}
+
+
+def getHostName():
+    return os.environ["hostname"] + "." + os.environ["servicename"] + "." + os.environ["namespace"] + ".svc.cluster.local"
+
+with DAG(
+    dag_id='ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl',
+    default_args=default_args,
+    description='This workflow loads DTS data',
+    tags=["dd40badc-44a8-4c24-994a-ab80edc83478","ips"],
+    start_date=datetime(2024, 11, 18),
+    schedule_interval='*/30 * * * *',
+    catchup=False,
+    user_defined_macros = {
+        'getHostName': getHostName
+    }
+) as dag:
+
+    push_run_id_task = PythonOperator(
+        task_id='push_run_id_task',
+        python_callable=push_run_id,
+        provide_context=True
+    )
+
+    dts_sm_bronze = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_bronze_main_caller.py", 
+        task_id="dts_sm_bronze",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "1",
+            "task_name": "dts_sm_bronze",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "2g",
+            "executor_cores": "2",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8001",
+            "spark.driver.port": "8002",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_archive_files = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/utils/archive_files_main_caller.py", 
+        task_id="dts_sm_archive_files",
+        conn_id='spark',
+        env_vars={
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "1",
+            "task_name": "dts_sm_bronze",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8003",
+            "spark.driver.port": "8004",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+    dts_sm_silver = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_silver_main_caller.py", 
+        task_id="dts_sm_gold_1_day",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_publish",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "2",
+            "task_name": "dts_silver",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "bronze_table_name": "dts_sm",  
+            "silver_table_name": "dts",
+            "backfill_window": "7200",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8005",
+            "spark.driver.port": "8006",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_1_day = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_1_day",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_publish",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "2",
+            "task_name": "dts_file_publish",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "time_window": "86400",
+            "sample_size": "60",
+            "engine_run_frequency": "1800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8005",
+            "spark.driver.port": "8006",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_1_day_file_retention = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_1_day_file_retention",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_retention",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "3",
+            "task_name": "dts_file_retention",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "freq": "1day",
+            "retention_time_sec": "2676800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8007",
+            "spark.driver.port": "8008",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_1_month = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_1_month",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_publish",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "4",
+            "task_name": "dts_file_publish",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "time_window": "2592000",
+            "sample_size": "1",
+            "engine_run_frequency": "1800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8009",
+            "spark.driver.port": "8010",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_1_month_file_retention = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_1_month_file_retention",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_retention",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "5",
+            "task_name": "dts_file_retention",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "freq": "1month",
+            "retention_time_sec": "2676800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8011",
+            "spark.driver.port": "8012",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_1_week = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_1_week",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_publish",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "6",
+            "task_name": "dts_file_publish",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "time_window": "604800",
+            "sample_size": "1",
+            "engine_run_frequency": "1800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8013",
+            "spark.driver.port": "8014",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_1_week_file_retention = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_1_week_file_retention",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_retention",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "7",
+            "task_name": "dts_file_retention",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "freq": "1week",
+            "retention_time_sec": "2676800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8015",
+            "spark.driver.port": "8016",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_30_min = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_30_min",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_publish",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "8",
+            "task_name": "dts_file_publish",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "time_window": "1800",
+            "sample_size": "60",
+            "executor_memory": "2g",
+            "engine_run_frequency": "1800",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8017",
+            "spark.driver.port": "8018",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_30_mins_file_retention = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_30_mins_file_retention",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_retention",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "9",
+            "task_name": "dts_file_retention",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "freq": "30mins",
+            "retention_time_sec": "2676800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8019",
+            "spark.driver.port": "8020",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_60_min = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_60_min",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_publish",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "10",
+            "task_name": "dts_file_publish",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "time_window": "3600",
+            "sample_size": "60",
+            "engine_run_frequency": "1800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8021",
+            "spark.driver.port": "8022",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    dts_sm_gold_60_mins_file_retention = SparkKubernetesOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_gold_main_caller.py", 
+        task_id="dts_sm_gold_60_mins_file_retention",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "dts",
+            "activity_name": "dts_file_retention",
+            "workflow_id": "4",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_dts_etl",
+            "task_id": "11",
+            "task_name": "dts_file_retention",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "freq": "60mins",
+            "retention_time_sec": "2676800",
+            "executor_memory": "2g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8023",
+            "spark.driver.port": "8024",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    push_run_id_task >> dts_sm_bronze
+    dts_sm_bronze >> [dts_sm_archive_files,dts_sm_silver]
+    dts_sm_silver >> [dts_sm_gold_1_day, dts_sm_gold_1_month, dts_sm_gold_1_week, dts_sm_gold_30_min, dts_sm_gold_60_min]
+    dts_sm_gold_1_day >> dts_sm_gold_1_day_file_retention
+    dts_sm_gold_1_month >> dts_sm_gold_1_month_file_retention
+    dts_sm_gold_1_week >> dts_sm_gold_1_week_file_retention
+    dts_sm_gold_30_min >> dts_sm_gold_30_mins_file_retention
+    dts_sm_gold_60_min >> dts_sm_gold_60_mins_file_retention
+    
