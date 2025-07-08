@@ -1,0 +1,294 @@
+from airflow import DAG
+from datetime import datetime, timedelta
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.operators.python import PythonOperator
+import os
+
+default_args = {
+    'owner': 'BH',
+    'retries': 0,
+    'retry_delay': timedelta(minutes=2)
+}
+
+def push_run_id(**kwargs):
+    # Retrieve the run_id from the context
+    run_id = kwargs['run_id']
+
+    timestamp_str = run_id.split('__')[-1]  # e.g., "2023-01-01T12:34:56"
+    
+    # Convert to datetime object
+    dt_object = datetime.strptime(timestamp_str, '%Y-%m-%dT%H:%M:%S%z')
+    
+    # Convert to epoch timestamp
+    epoch_timestamp = int(dt_object.timestamp())
+
+
+    # Push it to XCom for later tasks to retrieve
+    kwargs['ti'].xcom_push(key='run_id', value=epoch_timestamp)
+    print(f"Run ID pushed to XCom: {epoch_timestamp}")
+
+def getHostName():
+    return os.environ["hostname"] + "." + os.environ["servicename"] + "." + os.environ["namespace"] + ".svc.cluster.local"
+
+with DAG(
+    dag_id='ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl',
+    default_args=default_args,
+    description='This workflow loads data for PT Gauge and PT Gauge Electricals and executes rules to generate alerts.',
+    tags=["dd40badc-44a8-4c24-994a-ab80edc83478","ips"],
+    start_date=datetime(2024, 11, 18),
+    schedule_interval='*/30 * * * *',
+    catchup=False,
+    user_defined_macros = {
+        'getHostName': getHostName
+    }
+) as dag:
+
+    push_run_id_task = PythonOperator(
+        task_id='push_run_id_task',
+        python_callable=push_run_id,
+        provide_context=True
+    )
+
+    pt_gauge_bronze = SparkSubmitOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_bronze_main_caller.py", 
+        task_id="pt_gauge_bronze",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "pt_gauge",
+            "workflow_id": "3",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl",
+            "task_id": "1",
+            "task_name": "pt_gauge_bronze",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "4g",
+            "executor_cores": "2",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8001",
+            "spark.driver.port": "8002",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    pt_gauge_archive_files = SparkSubmitOperator(
+        application="/opt/spark/python-scripts/src/utils/archive_files_main_caller.py", 
+        task_id="pt_gauge_archive_files",
+        conn_id='spark',
+        env_vars={
+            "workflow_id": "3",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl",
+            "task_id": "1",
+            "task_name": "pt_gauge_bronze",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "4g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8003",
+            "spark.driver.port": "8004",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    pt_gauge_electricals_bronze = SparkSubmitOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_bronze_main_caller.py", 
+        task_id="pt_gauge_electricals_bronze",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "pt_gauge_electricals",
+            "workflow_id": "3",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl",
+            "task_id": "2",
+            "task_name": "pt_gauge_electricals_bronze",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "4g",
+            "executor_cores": "2",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8005",
+            "spark.driver.port": "8006",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    pt_gauge_electricals_archive_files = SparkSubmitOperator(
+        application="/opt/spark/python-scripts/src/utils/archive_files_main_caller.py", 
+        task_id="pt_gauge_electricals_archive_files",
+        conn_id='spark',
+        env_vars={
+            "workflow_id": "3",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl",
+            "task_id": "2",
+            "task_name": "pt_gauge_electricals_bronze",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "4g",
+            "executor_cores": "1",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8007",
+            "spark.driver.port": "8008",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    pt_gauge_silver = SparkSubmitOperator(
+        application="/opt/spark/python-scripts/src/etl/ips_silver_main_caller.py", 
+        task_id="pt_gauge_silver",
+        conn_id='spark',
+        env_vars={
+            "source_data_type": "pt_gauge",
+            "backfill_window": "7200",
+            "workflow_id": "3",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl",
+            "task_id": "3",
+            "task_name": "pt_gauge_silver",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "4g",
+            "executor_cores": "6",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8009",
+            "spark.driver.port": "8010",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    pt_gauge_gold = SparkSubmitOperator(
+        application="/opt/spark/python-scripts/src/etl/resample_gold_main_caller.py", 
+        task_id="pt_gauge_gold",
+        conn_id='spark',
+        env_vars={
+            "source_table": "pt_gauge",
+            "frequency": "minute",
+            "columns": "pressure, temperature",
+            "partition_cols": "asset_id",
+            "workflow_id": "3",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl",
+            "task_id": "4",
+            "task_name": "pt_gauge_gold",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "executor_memory": "4g",
+            "executor_cores": "2",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8011",
+            "spark.driver.port": "8012",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    rule_execution = SparkSubmitOperator(
+        application="/opt/spark/python-scripts/src/etl/rule_execution_v2.py", 
+        task_id="rule_execution",
+        conn_id='spark',
+        env_vars={
+            "workflow_id": "3",
+            "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_ips_etl",
+            "task_id": "5",
+            "task_name": "pt_gauge_rule_execution",
+            "run_id": "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+            "catalog": "",
+            "delay" : "1800",
+            "sensor_type" : "pt_gauge",
+            "scope" : "cordant_azure_service_bus",
+            "engine_run_frequency" : "1800",
+            "data_frequency" : "1",
+            "executor_memory": "4g",
+            "executor_cores": "4",
+            "driver_memory": "1g",
+            "driver_cores": "1",
+            "spark_master": "spark://spark-master-svc:7077"
+        },
+        executor_memory="1G",
+        executor_cores="1",
+        driver_memory="1G",
+        num_executors="2",
+        conf={
+            "spark.dynamicAllocation.enabled": "false",
+            "spark.driver.blockManager.port": "8013",
+            "spark.driver.port": "8014",
+            "spark.driver.host": "{{ getHostName() }}"
+        }
+        # packages='org.apache.hadoop:hadoop-aws:3.3.4'
+    )
+
+    push_run_id_task >> [pt_gauge_bronze, pt_gauge_electricals_bronze]
+    pt_gauge_bronze >> pt_gauge_archive_files
+    pt_gauge_electricals_bronze >> pt_gauge_electricals_archive_files
+    [pt_gauge_archive_files, pt_gauge_electricals_archive_files] >> pt_gauge_silver >> [pt_gauge_gold, rule_execution]
+
+    # [pt_gauge_bronze >> pt_gauge_archive_files , pt_gauge_electricals_bronze >> pt_gauge_electricals_archive_files]
+    # [pt_gauge_bronze, pt_gauge_electricals_bronze] >> pt_gauge_silver
+    # pt_gauge_silver >> [pt_gauge_gold, rule_execution]
+    
