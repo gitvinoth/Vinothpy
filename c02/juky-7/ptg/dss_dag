@@ -1,0 +1,140 @@
+from airflow import DAG # type: ignore
+from datetime import datetime, timedelta
+from airflow.providers.cncf.kubernetes.operators.spark_kubernetes import SparkKubernetesOperator # type: ignore
+from spark_application_template import generate_template_spec
+from push_run_id_template import push_run_id
+from airflow.operators.python import PythonOperator # type: ignore
+
+default_args = {
+    'owner' : 'BH',
+    'retries' : 0,
+    'retry_delay' : timedelta(minutes=2),
+}
+
+with DAG(
+    dag_id='ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dss_etl',
+    default_args=default_args,
+    description='This workflow ingests dss data',
+    tags=["dd40badc-44a8-4c24-994a-ab80edc83478","dss"],
+    start_date=datetime(2025, 3, 11),
+    schedule_interval='30 * * * *',
+    catchup=False
+) as dag:
+    
+    push_run_id_task = PythonOperator(
+        task_id = 'push_run_id_task',
+        python_callable = push_run_id,
+        provide_context = True
+    )
+    
+    #Task-1
+    dss_bronze = SparkKubernetesOperator(
+        task_id = 'dss_bronze',
+        kubernetes_conn_id = "kubernetes_default",
+        template_spec = generate_template_spec(
+            task_name = "dss_bronze",
+            main_application_file = "local:///opt/spark/python-scripts/src/etl/dss_bronze_main_caller.py",
+            driver_cores = 1,
+            driver_memory = "1g",
+            driver_cores_limit = "1000m",
+            executor_cores= 1,
+            executor_memory= "1g",
+            executor_instances= 1,
+            run_id = "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            env_vars = {
+                "source_data_type": "dss",
+                "workflow_id": "9",
+                "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dss_etl",
+                "task_id": "1",
+                "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                "catalog": "",
+                "source": "ips",
+                "task_name": f"dss_bronze"
+            }
+        )
+    )
+    #Task-2
+    dss_archive_files = SparkKubernetesOperator(
+        task_id = 'dss_archive_files',
+        kubernetes_conn_id = "kubernetes_default",
+        template_spec = generate_template_spec(
+            task_name = "dss_bronze",
+            main_application_file = "local:///opt/spark/python-scripts/src/utils/archive_files_main_caller.py",
+            driver_cores = 1,
+            driver_memory = "1g",
+            driver_cores_limit = "1000m",
+            executor_cores= 1,
+            executor_memory= "1g",
+            executor_instances= 1,
+            run_id = "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            env_vars = {
+                "workflow_id": "9",
+                "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dss_etl",
+                "task_id": "1",
+                "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                "catalog": "",
+                "task_name": f"dss_archive_files"
+            }
+        )
+    )
+    #Task-3
+    dss_silver = SparkKubernetesOperator(
+        task_id = 'dss_silver',
+        kubernetes_conn_id = "kubernetes_default",
+        template_spec = generate_template_spec(
+            task_name = "dss_silver",
+            main_application_file = "local:///opt/spark/python-scripts/src/etl/dss_silver_main_caller.py",
+            driver_cores = 1,
+            driver_memory = "1g",
+            driver_cores_limit = "1000m",
+            executor_cores= 1,
+            executor_memory= "1g",
+            executor_instances= 1,
+            run_id = "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            env_vars = {
+                "workflow_id": "9",
+                "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_carbon_watch_etl",
+                "task_id": "1",
+                "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                "catalog": "",
+                "task_name": f"dss_silver",
+                "activity_name": "dss_silver",
+                "source_data_type": "dss",
+            }
+        )
+    )
+    #Task-4
+    rule_execution = SparkKubernetesOperator(
+        task_id = 'rule_execution',
+        kubernetes_conn_id = "kubernetes_default",
+        template_spec = generate_template_spec(
+            task_name = "rule_execution",
+            main_application_file = "local:///opt/spark/python-scripts/src/etl/rule_execution_v2.py",
+            driver_cores = 1,
+            driver_memory = "1g",
+            driver_cores_limit = "1000m",
+            executor_cores= 1,
+            executor_memory= "1g",
+            executor_instances= 1,
+            run_id = "{{ task_instance.xcom_pull(task_ids='push_run_id_task', key='run_id') }}",
+            env_vars = {
+                "sensor_type": "dss",
+                "workflow_id": "9",
+                "delay": "1800",
+                "workflow_name": "ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dss_etl",
+                "task_id": "1",
+                "storage_host": "ccus-dd40badc-44a8-4c24-994a-ab80edc83478",
+                "catalog": "",
+                "topic_name": "ccus-dev-dna-03",
+                "scope": "cordant_azure_service_bus",
+                "engine_run_frequency": "1800",
+                "data_frequency": "1",
+                "downtime_seconds": "7200",
+                "task_name": f"rule_execution"
+            }
+        )
+    )
+    
+        
+push_run_id_task >> [dss_bronze]
+dss_bronze >> dss_archive_files >> dss_silver >> rule_execution
