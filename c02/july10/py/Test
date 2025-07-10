@@ -1,0 +1,116 @@
+from pyspark.sql.functions import col
+from datetime import datetime
+import time
+
+# Base time config for simulation
+epoch_base = int(time.mktime(time.strptime("2025-07-10 16:00:00", "%Y-%m-%d %H:%M:%S")))
+
+# Define current_time_range for this rule execution
+current_time_range = {
+    "start_time": epoch_base + 3600,  # 17:00
+    "end_time": epoch_base + 5400     # 17:30
+}
+
+
+def get_input_df_from_silver(sensor_type: str, parameter: str, catalog: str, current_time_range: Dict[str, int], duration: int):
+    start = current_time_range["start_time"] - duration
+    end = current_time_range["end_time"]
+
+    if sensor_type == "pt_gauge":
+        query = f"""
+            SELECT epoch_timestamp, {parameter}
+            FROM {catalog}.silver_zone.pt_gauge
+            WHERE {parameter} IS NOT NULL
+              AND epoch_timestamp >= {start}
+              AND epoch_timestamp < {end}
+        """
+    elif sensor_type == "dss":
+        query = f"""
+            SELECT epoch_timestamp, {parameter}
+            FROM {catalog}.silver_zone.dss
+            WHERE {parameter} IS NOT NULL
+              AND epoch_timestamp >= {start}
+              AND epoch_timestamp < {end}
+        """
+    elif sensor_type == "flowmeter":
+        query = f"""
+            SELECT timestamp AS epoch_timestamp, {parameter}
+            FROM {catalog}.silver_zone.flowmeter
+            WHERE {parameter} IS NOT NULL
+              AND timestamp >= {start}
+              AND timestamp < {end}
+        """
+    elif sensor_type == "micro_seismic":
+        query = f"""
+            SELECT epoch_timestamp, {parameter}
+            FROM {catalog}.silver_zone.microseismic_events
+            WHERE {parameter} IS NOT NULL
+              AND epoch_timestamp >= {start}
+              AND epoch_timestamp < {end}
+        """
+    else:
+        raise ValueError(f"Unknown sensor_type: {sensor_type}")
+
+    return spark.sql(query)
+
+
+
+df = get_input_df_from_silver(sensor_type, parameter, catalog, current_time_range, duration)
+
+
+
+
+# Load all external rules for the given sensor_type
+external_rules_df = spark.sql(f"""
+    SELECT *
+    FROM {catalog}.bronze_zone.external_rules
+    WHERE sensor_type = '{sensor_type}'
+""")
+
+external_rules = external_rules_df.collect()
+
+for rule_row in external_rules:
+    rule_dict = rule_row.asDict()
+    rule_id = rule_dict["rule_id"]
+    duration = int(rule_dict["duration"])
+    threshold = float(rule_dict["threshold"])
+    parameter = rule_dict["parameter"]
+    operator = rule_dict["operator"]
+    path = rule_dict["Path"]
+
+    logger.info(f"Processing external rule: {rule_id} from path: {path}")
+
+    # Load Python script content from ADLS
+    try:
+        script_content = dbutils.fs.head(path)
+        exec(script_content)
+    except Exception as e:
+        logger.error(f"Failed to load/execute script from {path}: {str(e)}")
+        continue
+
+    # Read filtered sensor data directly from silver table
+    try:
+        df = get_input_df_from_silver(sensor_type, parameter, catalog, current_time_range, duration)
+    except Exception as e:
+        logger.error(f"Failed to read input data for rule {rule_id}: {str(e)}")
+        continue
+
+    # Build rule structure expected by external __main()
+    rule_struct = {
+        "rule_id": rule_id,
+        "threshold": threshold,
+        "metadata": {
+            "duration": duration
+        },
+        "parameter": parameter,
+        "operator": operator
+    }
+
+    # Invoke main function from external rule script
+    try:
+        __main(df, current_time_range, rule_struct)
+        logger.info(f"Successfully executed external rule: {rule_id}")
+    except Exception as e:
+        logger.error(f"Error executing rule {rule_id}: {str(e)}")
+
+
