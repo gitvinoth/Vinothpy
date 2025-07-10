@@ -1,0 +1,91 @@
+from typing import List, Dict, Any
+import logging
+
+def __main(parameters_data: List[Dict[str, Any]], current_time_range: Dict[str, int], rule: Dict[str, Any]):
+    logger = logging.getLogger("ZScoreRule")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    logger.info("Starting Z-Score anomaly detection")
+    
+    # Extract time boundaries and rule settings
+    start_time = current_time_range["start_time"]
+    end_time = current_time_range["end_time"]
+    duration = rule.get("metadata", {}).get("duration", 3600)  # default to 1 hour
+    threshold = rule.get("threshold", 10)
+    logger.info(f"Z-Score Rule Triggered. start_time={start_time}, end_time={end_time}, duration={duration}, threshold={threshold}")
+    
+    # Find the pressure parameter data
+    pressure_entry = next((p for p in parameters_data if p["parameter"] == "pressure"), None)
+    if not pressure_entry:
+        logger.warning("No pressure data found in parameters_data.")
+        return
+    
+    timestamps = pressure_entry["data"]["timestamps"]
+    values = pressure_entry["data"]["values"]
+    
+    # Validate length
+    if len(timestamps) != len(values):
+        logger.error("Length of timestamps and values does not match.")
+        return
+    
+    # Build full data list
+    full_data = list(zip(timestamps, values))
+    
+    # Step 1: Build complete output pressure series
+    pressure_data = [{"timestamp": ts, "value": val} for ts, val in full_data if start_time <= ts < end_time]
+    
+    # Step 2: Detect anomalies using rolling window
+    anomalies = []
+    for idx, (ts, val) in enumerate(full_data):
+        if ts < start_time or ts >= end_time:
+            continue
+        window_start = ts - duration
+        historical_vals = [v for (t, v) in full_data if window_start <= t < ts]
+        if len(historical_vals) < 2:
+            continue
+        mean = sum(historical_vals) / len(historical_vals)
+        variance = sum((x - mean) ** 2 for x in historical_vals) / len(historical_vals)
+        stddev = variance ** 0.5
+        if stddev == 0:
+            continue
+        z = (val - mean) / stddev
+        if abs(z) > threshold:
+            anomalies.append({
+                "timestamp": ts,
+                "value": val
+            })
+            logger.info(f"Anomaly detected at timestamp {ts}, value {val}, z-score {z}")
+    
+    # Step 3: Format output for create_anomaly()
+    if anomalies:
+        graph = {
+            "type": "line-chart",
+            "xaxis": {
+                "label": "timestamp",
+                "data": [p["timestamp"] for p in pressure_data]
+            },
+            "yaxis": {
+                "label": "Pressure",
+                "data": [p["value"] for p in pressure_data]
+            }
+        }
+        anomaly_output = [{
+            "start_time": start_time,
+            "end_time": end_time,
+            "graphs": [graph]
+        }]
+        logger.info("Anomalies detected, calling create_anomaly")
+        create_anomaly(anomaly_output, rule)
+    else:
+        logger.info("No anomalies detected")
+
+def create_anomaly(anomalies: List[Dict[str, Any]], rule: Dict[str, Any]):
+    logger = logging.getLogger("ZScoreRule")
+    logger.info("Sending anomalies to the sink")
+    # Placeholder for sending to Azure Service Bus or any other sink
+    print("Anomalies Sent:", anomalies)
+    logger.info("Anomalies sent successfully")
