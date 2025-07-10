@@ -1,0 +1,159 @@
+Z-Score Deviation Alert Rule
+
+Purpose:
+Detect sudden anomalies in well pressure data by identifying values that are statistically rare based on recent behavior.
+
+Equation:
+Z = (P_current - μ_P_1h) / σ_P_1h
+Trigger an alert if |Z| > 3
+
+Where:
+• P_current = Current pressure reading
+• μ_P_1h = Mean (average) pressure over the past 1 hour
+• σ_P_1h = Standard deviation of pressure over the past 1 hour
+• Z = Standardized score showing how far the current value is from the average
+
+Interpretation:
+This rule flags any pressure value that is more than 3 standard deviations away from the recent 1-hour mean. These are statistically rare events and may indicate operational anomalies, equipment malfunctions, or physical changes in the well or reservoir.
+
+Example:
+If the pressure has been steady at 2000 psi (mean), with a standard deviation of 5 psi, then any new value above 2015 psi or below 1985 psi would trigger an alert.
+
+Why It Helps:
+• Captures sudden abnormal spikes or drops in pressure
+• Adjusts dynamically to current system behavior
+• Effective for real-time anomaly detection in 1-second frequency data
+
+Note:
+Avoid using this rule if the standard deviation is near zero (i.e., no variation), or during periods of expected operational changes (like planned injection events), unless combined with other contextual rules. Z-Score Deviation Alert Rule
+
+Purpose:
+Detect sudden anomalies in well pressure data by identifying values that are statistically rare based on recent behavior.
+
+
+Equation:
+Z = (P_current - μ_P_1h) / σ_P_1h
+Trigger an alert if |Z| > 3
+
+Where:
+• P_current = Current pressure reading
+• μ_P_1h = Mean (average) pressure over the past 1 hour
+• σ_P_1h = Standard deviation of pressure over the past 1 hour
+• Z = Standardized score showing how far the current value is from the average
+
+Interpretation:
+This rule flags any pressure value that is more than 3 standard deviations away from the recent 1-hour mean. These are statistically rare events and may indicate operational anomalies, equipment malfunctions, or physical changes in the well or reservoir.
+
+Example:
+If the pressure has been steady at 2000 psi (mean), with a standard deviation of 5 psi, then any new value above 2015 psi or below 1985 psi would trigger an alert.
+
+Why It Helps:
+• Captures sudden abnormal spikes or drops in pressure
+• Adjusts dynamically to current system behaviour
+• Effective for real-time anomaly detection in 1-second frequency data
+Note:
+Avoid using this rule if the standard deviation is near zero (i.e., no variation), or during periods of expected operational changes (like planned injection events), unless combined with other contextual rules.
+Example – UI Chart
+
+ 
+What This Does:
+• Simulates stable pressure data around 2000 psi with 5 psi standard deviation
+• Introduces a 2030 psi spike (6σ)
+• Uses a rolling window of 1 hour (3600 seconds) for live mean & std deviation
+• Flags anomalies where |Z| > 3
+• Visualizes both the pressure data and the detected outlier(s)
+
+Z-Score Deviation Alert — Example
+
+Situation:
+You’re monitoring pressure in a CO₂ injection well at 1-second intervals. Over the past hour, you’ve collected 3600 pressure readings.
+
+Let’s Assume:
+• Current pressure reading (P_current): 2030 psi
+• Mean pressure over past hour (μ_P_1h): 2000 psi
+• Standard deviation over past hour (σ_P_1h): 5 psi
+
+Step-by-step Calculation:
+1. Z = (P_current - μ_P_1h) / σ_P_1h
+Z = (2030 - 2000) / 5
+Z = 30 / 5
+Z = 6
+2. Compare |Z| to threshold
+|6| > 3 → Yes, it’s greater
+
+Result:
+• Z = 6 → This means the current reading is 6 standard deviations above the mean.
+• Since |Z| > 3, this is statistically rare and would trigger an alert.
+
+User Configurable Items from UI:
+Input	Description
+Threshold	Threshold for Z-score (commonly 2 or 3); determines how sensitive the alert is
+Time window (μ, σ)	Duration over which mean (μ) and std. deviation (σ) are calculated (e.g., 1h)
+
+
+
+
+Open queries
+·	Assumption is the data to be used for mean and standard deviation is a sliding/rolling window? (new calculation for every data point? This will be expensive)
+Understood, the sliding window is usually preferred for better anomaly results. What we can do is, we can consider the past 24 hours, updated every hour. OR use the sliding window with refresh interval every 30 mins or 1 hour instead of every second
+
+·	What should be the duration of chart on the Alert UI page?
+We can add input fields where user can suggest the duration (last 6 or 12 hours for real time anomaly review, or last 24 hrs. to a week if intention is to see a trend or drift direction) - This can be user configurable
+
+
+·	Do we create 1 alert per anomaly? If not, what will be the basis?
+This can be based on the duration. OR we can define the cooldown window (ex: don’t trigger again for X time /  hour unless score drops below threshold and rises again).
+
+Output
+·	Pressure data
+·	Anomaly
+·	+- Threshold value
+
+ 
+Python code
+import numpy as np
+def detect_z_score_anomalies(current_data, historical_data):
+    """
+    current_data: List of pressure readings for the current window
+    historical_data: List of pressure readings for the historical window
+    Returns: List of dictionaries with Z-score and anomaly flag for each point
+    """
+    mean_p = np.mean(historical_data)
+    std_p = np.std(historical_data)
+    results = []
+    for i, p in enumerate(current_data):
+        z = (p - mean_p) / std_p if std_p != 0 else 0
+        is_anomaly = abs(z) > 3
+        results.append({
+            "Index": i,
+            "P_current": p,
+            "Mean_P_1h": mean_p,
+            "Std_P_1h": std_p,
+            "Z_score": z,
+            "Alert_Triggered": is_anomaly
+        })
+    return results
+ 
+ 
+Javascript code
+ 
+import { mean, std } from 'mathjs';
+function detectZScoreAnomalies(currentData, historicalData) {
+    const meanP = mean(historicalData);
+    const stdP = std(historicalData);
+    return currentData.map((p, i) => {
+        const z = stdP !== 0 ? (p - meanP) / stdP : 0;
+        const isAnomaly = Math.abs(z) > 3;
+        return {
+            Index: i,
+            P_current: p,
+            Mean_P_1h: meanP,
+            Std_P_1h: stdP,
+            Z_score: z,
+            Alert_Triggered: isAnomaly
+        };
+    });
+}
+
+
+
