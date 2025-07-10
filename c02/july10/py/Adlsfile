@@ -1,0 +1,117 @@
+from typing import List, Dict, Any
+import logging
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+import operator as py_operator
+
+# Initialize SparkSession
+spark = SparkSession.builder.getOrCreate()
+
+# Map string operators to actual functions
+OPERATOR_MAP = {
+    ">": lambda col, val: col > val,
+    "<": lambda col, val: col < val,
+    ">=": lambda col, val: col >= val,
+    "<=": lambda col, val: col <= val,
+    "==": lambda col, val: col == val,
+    "!=": lambda col, val: col != val
+}
+
+def __main__(parameter_df: DataFrame, current_time_range: Dict[str, int], rule: Dict[str, Any]):
+    logger = logging.getLogger("ZScoreRule")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    logger.info("Starting Z-Score anomaly detection")
+
+    start_time = current_time_range["start_time"]
+    end_time = current_time_range["end_time"]
+
+    parameter_name = rule.get("parameter", "pressure")
+    duration = int(rule.get("duration", 3600))
+    threshold = float(rule.get("threshold", 10))
+    operator_symbol = rule.get("operator", ">")
+
+    logger.info(f"Configured values: parameter={parameter_name}, duration={duration}, threshold={threshold}, operator={operator_symbol}")
+
+    # Step 1: Filter for full historical + current window range
+    full_range_start = start_time - duration
+    df = parameter_df.filter(
+        (F.col("epoch_timestamp") >= full_range_start) & (F.col("epoch_timestamp") < end_time)
+    ).select("epoch_timestamp", parameter_name)
+
+    if df.isEmpty():
+        logger.warning("No data available in range.")
+        return
+
+    # Step 2: Compute rolling mean, stddev, z-score
+    w = Window.orderBy("epoch_timestamp").rangeBetween(-duration, -1)
+    df_stats = df.withColumn("mean", F.mean(parameter_name).over(w)) \
+                 .withColumn("stddev", F.stddev(parameter_name).over(w)) \
+                 .withColumn("z_score", (F.col(parameter_name) - F.col("mean")) / F.col("stddev")) \
+                 .withColumn("abs_z", F.abs(F.col("z_score")))
+
+    # Step 3: Apply dynamic operator for anomaly detection
+    if operator_symbol not in OPERATOR_MAP:
+        logger.error(f"Unsupported operator: {operator_symbol}")
+        return
+
+    condition_expr = OPERATOR_MAP[operator_symbol](F.col("abs_z"), threshold)
+    df_filtered = df_stats.filter(
+        (F.col("epoch_timestamp") >= start_time) & (F.col("epoch_timestamp") < end_time)
+    ).withColumn("is_anomaly", condition_expr)
+
+    df_filtered.cache()
+    df_filtered.show(5, False)
+
+    # Step 4: Prepare Graphs
+    full_zscore_data = df_filtered.select("epoch_timestamp", parameter_name, "z_score") \
+        .orderBy("epoch_timestamp").collect()
+
+    anomaly_data = df_filtered.filter(F.col("is_anomaly") == True) \
+        .select("epoch_timestamp", parameter_name, "z_score").orderBy("epoch_timestamp").collect()
+
+    if anomaly_data:
+        anomaly_graph = {
+            "type": "line-chart",
+            "xaxis": {
+                "label": "timestamp",
+                "data": [row["epoch_timestamp"] for row in anomaly_data]
+            },
+            "yaxis": {
+                "label": parameter_name,
+                "data": [row[parameter_name] for row in anomaly_data]
+            }
+        }
+        zscore_graph = {
+            "type": "line-chart",
+            "xaxis": {
+                "label": "timestamp",
+                "data": [row["epoch_timestamp"] for row in full_zscore_data]
+            },
+            "yaxis": {
+                "label": "Z-Score",
+                "data": [row["z_score"] for row in full_zscore_data]
+            }
+        }
+
+        anomalies_output = [{
+            "start_time": start_time,
+            "end_time": end_time,
+            "graphs": [anomaly_graph, zscore_graph]
+        }]
+
+        logger.info("Anomalies found, calling create_anomaly")
+        create_anomaly(anomalies_output, rule)
+    else:
+        logger.info("No anomalies detected")
+
+def create_anomaly(anomalies: List[Dict[str, Any]], rule: Dict[str, Any]):
+    logger = logging.getLogger("ZScoreRule")
+    logger.info("Sending anomalies to the sink")
+    print("Anomalies Sent:", anomalies)
+    logger.info("Anomalies sent successfully")
