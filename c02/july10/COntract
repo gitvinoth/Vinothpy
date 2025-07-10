@@ -1,0 +1,79 @@
+Contract for every rule.
+Every rule will have a __main function that will be the starting point. Rule engine will invoke this function to trigger the rule execution
+
+__main function definition as below
+
+
+
+function __main(parameters_data, current_time_range, rule):
+  # rule logic
+  # rule logic
+  create_anomaly(anomalies, rule)
+# parameters_data will contain all data for current_time_range + historical data as per duration selected for calculating aggregated values
+parameters_data: [{
+  parameter: pressure,
+  data: [
+    timestamps: [123214141, 123214142, 123214143]
+    values: [1231, 1231.4, 1231.9]
+  ]
+},{
+  parameter: temperature,
+  data: [
+    timestamps: [123214141, 123214142, 123214143]
+    values: [31, 31.4, 31.9]
+  ]
+}]
+# current_time_range will contain the current time range of data on which rule anomaly needs to be checked
+current_time_range: {
+  start_time: 123214141,
+  end_time: 123214143
+}
+# rule contains all the other rule specific metadata like threshold, metadata etc.
+rule: {
+  threshold: 34,
+  metadata: {
+    multiplying_factor: 3
+  }
+}
+
+
+create_anomaly() function definition as below -
+
+
+
+function create_anomaly(anomalies, rule):
+  # send output to service bus for alert processor service
+anomalies: [
+  {
+    start_time: 123214141,
+    end_time: 123214143,
+    graphs: [{
+      type: line-chart,
+      xaxis: {
+        label: timestamp,
+        data: [123214141, 123214142, 123214143]
+      }, 
+      yaxis: {
+        label: Pressure,
+        data: [1231, 1231.4, 1231.9]
+      }
+    },{
+      type: heatmap,
+      xaxis: {
+        label: timestamp,
+        data: [123214141, 123214142, 123214143]
+      }, 
+      yaxis: {
+        label: depth,
+        data: [10, 20, 30]
+      },
+      zaxis: {
+        label: temperature,
+        data: [31, 31.4, 31.9]
+      }
+    }]
+  }
+]
+
+
+
