@@ -1,0 +1,40 @@
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# COMMAND ----------
+
+def detect_z_score_anomalies(
+   spark_df,             # Spark DataFrame with 'epoch_timestamp', 'pressure'
+   start_time: int,
+   end_time: int,
+   duration: int,
+   threshold: float,
+   logger
+):
+   logger.info(f"Running Spark-based Z-Score detection")
+   logger.info(f"start_time: {start_time}, end_time: {end_time}, duration: {duration}, threshold: {threshold}")
+   # Filter only the necessary data: full [start_time - duration, end_time)
+   full_range_start = start_time - duration
+   logger.info(f"Full range: [{full_range_start}, {end_time}]")
+   df = spark_df.filter(
+       (F.col("epoch_timestamp") >= full_range_start) & (F.col("epoch_timestamp") < end_time)
+   ).select("epoch_timestamp", "pressure")
+   df.display()
+   # logger.info(f"Dataframe filtered: {df}")
+   # Define a 1-hour rolling window (duration seconds) for each row
+   w = Window \
+       .orderBy("epoch_timestamp") \
+       .rangeBetween(-duration, -1)  # previous 'duration' seconds, excluding current row 
+   df_with_stats = df.withColumn("mean", F.mean("pressure").over(w)) \
+                     .withColumn("stddev", F.stddev("pressure").over(w)) \
+                     .withColumn("z_score", (F.col("pressure") - F.col("mean")) / F.col("stddev")) \
+                     .withColumn("Alert_Triggered", F.abs(F.col("z_score")) > threshold) \
+                     .filter((F.col("epoch_timestamp") >= start_time) & (F.col("epoch_timestamp") < end_time))
+   logger.info(f"Z-Score processing complete")
+   df_with_stats.display()
+   return df_with_stats.select(
+       "epoch_timestamp", "pressure", "mean", "stddev", "z_score", "Alert_Triggered"
+   )
