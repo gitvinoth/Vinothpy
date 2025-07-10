@@ -1,0 +1,23 @@
+CREATE TABLE `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.external_rules AS
+SELECT 
+    rule_id, 
+    rule_name, 
+    tenant_id, 
+    "abfs://" AS Path, 
+    condition_id, 
+    condition_name, 
+    asset_id, 
+    join_condition, 
+    parameter, 
+    operator, 
+    class, 
+    threshold, 
+    duration, 
+    rule_run_frequency, 
+    sensor_type, 
+    severity, 
+    risk_register_controls, 
+    threshold_unit, 
+    baseline_time AS baseline_timestamp, 
+    last_updated_date
+FROM `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.rules;
