@@ -1,0 +1,340 @@
+# Databricks notebook source
+from datetime import datetime
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    col, floor, explode, sequence, unix_timestamp, current_timestamp, date_trunc, lit,
+    struct, min as _min, max as _max, count as _count, sum as _sum, expr
+)
+from pyspark.sql.window import Window
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass # pragma: no cover
+except NameError:
+    from src.utils.write_utility import write_table
+    from src.utils.read_utility import read_delta_table, read_table
+
+# COMMAND ----------
+
+def generate_bucket_times(spark, bucket_size_seconds: int) -> DataFrame:
+    """Generate DataFrame with time buckets from day's start to now."""
+    try:
+        current_day_start = unix_timestamp(date_trunc("DAY", current_timestamp()))
+        current_ts = unix_timestamp(current_timestamp())
+        return spark.sql("SELECT 1").select(
+            explode(sequence(current_day_start, current_ts, lit(bucket_size_seconds)))
+            .alias("bucket_start")
+        )
+    except Exception as e:
+        raise RuntimeError(f"generate_bucket_times failed: {e}")
+
+# COMMAND ----------
+
+def expand_buckets(bucket_times_df: DataFrame, base_df: DataFrame) -> DataFrame:
+    """Cartesian join of asset/depth with bucket times."""
+    try:
+        asset_depth_df = base_df.select("asset_id", "depth").distinct()
+        return asset_depth_df.crossJoin(bucket_times_df)
+    except Exception as e:
+        raise RuntimeError(f"expand_buckets failed: {e}")
+
+# COMMAND ----------
+
+def dts_bucket(df: DataFrame, bucket_size_seconds: int) -> DataFrame:
+    """Assign each record to its bucket."""
+    try:
+        current_day_start = unix_timestamp(date_trunc("DAY", current_timestamp()))
+        current_ts = unix_timestamp(current_timestamp())
+        return df.filter(
+            col("asset_id").isNotNull() &
+            col("depth").isNotNull() &
+            col("temperature").isNotNull() &
+            (col("timestamp") >= current_day_start) &
+            (col("timestamp") <= current_ts)
+        ).withColumn(
+            "bucket_start",
+            ((col("timestamp") - current_day_start) / bucket_size_seconds).cast("long") * bucket_size_seconds + current_day_start
+        )
+    except Exception as e:
+        raise RuntimeError(f"dts_bucket failed: {e}")
+
+# COMMAND ----------
+
+def dts_get_sum(bucketed_df: DataFrame, expanded_buckets: DataFrame) -> DataFrame:
+    """Aggregate SUM(temperature) per bucket."""
+    try:
+        sum_df = bucketed_df.groupBy("asset_id", "depth", "bucket_start") \
+            .agg(_sum("temperature").alias("sum_temperature"))
+        return expanded_buckets.join(sum_df, ["asset_id", "depth", "bucket_start"], "left") \
+            .fillna({"sum_temperature": 0.0})
+    except Exception as e:
+        raise RuntimeError(f"dts_get_sum failed: {e}")
+
+# COMMAND ----------
+
+def dts_get_count(bucketed_df: DataFrame, expanded_buckets: DataFrame) -> DataFrame:
+    """Aggregate COUNT(temperature) per bucket."""
+    try:
+        count_df = bucketed_df.groupBy("asset_id", "depth", "bucket_start") \
+            .agg(_count("temperature").alias("count_temperature"))
+        return expanded_buckets.join(count_df, ["asset_id", "depth", "bucket_start"], "left") \
+            .fillna({"count_temperature": 0})
+    except Exception as e:
+        raise RuntimeError(f"dts_get_count failed: {e}")
+
+# COMMAND ----------
+
+def dts_get_min_max(bucketed_df: DataFrame, expanded_buckets: DataFrame) -> DataFrame:
+    """Compute min/max temperature with timestamp per bucket."""
+    try:
+        min_max_df = bucketed_df.groupBy("asset_id", "depth", "bucket_start") \
+            .agg(
+                _min(struct(col("temperature"), col("timestamp"))).alias("min_temp_struct"),
+                _max(struct(col("temperature"), col("timestamp"))).alias("max_temp_struct")
+            ).select(
+                "asset_id", "depth", "bucket_start",
+                col("min_temp_struct.temperature").alias("min_temperature"),
+                col("min_temp_struct.timestamp").alias("min_temperature_ts"),
+                col("max_temp_struct.temperature").alias("max_temperature"),
+                col("max_temp_struct.timestamp").alias("max_temperature_ts"),
+            ).withColumn(
+                "min_temperature_ts", _max("min_temperature_ts").over(Window.partitionBy("asset_id", "depth", "bucket_start"))
+            ).withColumn(
+                "max_temperature_ts", _max("max_temperature_ts").over(Window.partitionBy("asset_id", "depth", "bucket_start"))
+            )
+        return expanded_buckets.join(min_max_df, ["asset_id", "depth", "bucket_start"], "left")
+    except Exception as e:
+        raise RuntimeError(f"dts_get_min_max failed: {e}")
+
+# COMMAND ----------
+
+def dts_get_gold(
+    min_max_df, sum_df, count_df, bucket_size_seconds, spark
+):
+    """
+    Assemble the final gold summary table and return min, max, sum, count per asset_id/parameter/depth/bucket.
+    """
+    from pyspark.sql import functions as F
+
+    try:
+        min_max_with_count = min_max_df.join(
+            count_df.select("asset_id", "depth", "bucket_start", "count_temperature"),
+            on=["asset_id", "depth", "bucket_start"],
+            how="left"
+        )
+        valid_min_max = min_max_with_count.filter(F.col("count_temperature") > 0)
+        min_temp_df = valid_min_max.select(
+            "asset_id", "depth",
+            F.lit("temperature_min").alias("parameter"),
+            F.col("min_temperature_ts").cast("long").alias("timestamp"),
+            F.col("min_temperature").alias("value"),
+            F.col("bucket_start")
+        )
+        max_temp_df = valid_min_max.select(
+            "asset_id", "depth",
+            F.lit("temperature_max").alias("parameter"),
+            F.col("max_temperature_ts").cast("long").alias("timestamp"),
+            F.col("max_temperature").alias("value"),
+            F.col("bucket_start")
+        )
+        sum_temp_df = sum_df.select(
+            "asset_id", "depth",
+            F.lit("temperature_sum").alias("parameter"),
+            F.col("bucket_start").cast("long").alias("timestamp"),
+            F.col("sum_temperature").alias("value"),
+            F.col("bucket_start")
+        )
+        count_temp_df = count_df.select(
+            "asset_id", "depth",
+            F.lit("temperature_count").alias("parameter"),
+            F.col("bucket_start").cast("long").alias("timestamp"),
+            F.col("count_temperature").alias("value"),
+            F.col("bucket_start")
+        )
+        gold_df = min_temp_df.union(max_temp_df).union(sum_temp_df).union(count_temp_df) \
+            .select("asset_id", "parameter", "timestamp", "depth", "value", "bucket_start") \
+            .filter(
+                F.col("value").isNotNull() &
+                F.col("timestamp").isNotNull() &
+                F.col("depth").isNotNull()
+            )
+        # Deduplicate: Only keep one row per asset_id/parameter/depth/bucket_start
+        window = (
+            Window.partitionBy("asset_id", "parameter", "depth", "bucket_start")
+            .orderBy(
+                # For min/max: if multiple rows (shouldn't usually happen), take first by timestamp
+                F.col("timestamp").asc()
+            )
+        )
+        gold_df = gold_df.withColumn("rn", F.row_number().over(window)).filter(F.col("rn") == 1).drop("rn")
+        return gold_df.select("asset_id", "parameter", "timestamp", "value", "depth", "bucket_start")
+    except Exception as e:
+        raise RuntimeError(f"dts_get_gold failed: {e}")
+
+# COMMAND ----------
+
+def deduplicate_gold_table(
+    spark, 
+    gold_table: str, 
+    bucket_size_seconds: int
+):
+    """
+    For the given gold table and bucket size, keep only one unique (asset_id, depth, parameter, bucket_start) record.
+    - For min: keep row with minimum value and its timestamp
+    - For max: keep row with maximum value and its timestamp
+    - For sum/count: sum values for the bucket, keep earliest timestamp in the bucket
+    """
+    from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
+
+    df = spark.read.table(gold_table)
+    df = df.withColumn(
+        "bucket_start",
+        (F.col("timestamp") / bucket_size_seconds).cast("long") * bucket_size_seconds
+    )
+
+    # MIN: Get the min value and its timestamp
+    min_window = Window.partitionBy("asset_id", "depth", "parameter", "bucket_start").orderBy(F.col("value").asc(), F.col("timestamp").asc())
+    min_df = (
+        df.filter(F.col("parameter") == "temperature_min")
+        .withColumn("rn", F.row_number().over(min_window))
+        .filter(F.col("rn") == 1)
+        .drop("rn")
+    )
+
+    # MAX: Get the max value and its timestamp
+    max_window = Window.partitionBy("asset_id", "depth", "parameter", "bucket_start").orderBy(F.col("value").desc(), F.col("timestamp").desc())
+    max_df = (
+        df.filter(F.col("parameter") == "temperature_max")
+        .withColumn("rn", F.row_number().over(max_window))
+        .filter(F.col("rn") == 1)
+        .drop("rn")
+    )
+
+    # SUM: sum all values, keep earliest timestamp
+    sum_df = (
+        df.filter(F.col("parameter") == "temperature_sum")
+        .groupBy("asset_id", "depth", "parameter", "bucket_start")
+        .agg(
+            F.sum("value").alias("value"),
+            F.min("timestamp").alias("timestamp")
+        )
+    )
+
+    # COUNT: sum all values, keep earliest timestamp
+    count_df = (
+        df.filter(F.col("parameter") == "temperature_count")
+        .groupBy("asset_id", "depth", "parameter", "bucket_start")
+        .agg(
+            F.sum("value").alias("value"),
+            F.min("timestamp").alias("timestamp")
+        )
+    )
+
+    # Align schema
+    cols = ["asset_id", "parameter", "timestamp", "value", "depth", "bucket_start"]
+    min_df = min_df.select(*cols)
+    max_df = max_df.select(*cols)
+    sum_df = sum_df.select(*cols)
+    count_df = count_df.select(*cols)
+
+    deduped = min_df.unionByName(max_df).unionByName(sum_df).unionByName(count_df)
+
+    # Overwrite the gold table
+    (
+        deduped
+        .drop("bucket_start")
+        .write
+        .format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .saveAsTable(gold_table)
+    )
+
+# COMMAND ----------
+
+def resample_gold_dts(
+    spark,
+    logger,
+    dts_silver_table: str,
+    partition_cols: str,
+    dts_gold_table: str,
+    bucket_size_seconds: int = 3600
+) -> bool:
+    """Main gold resampling and merge routine."""
+    try:
+        dts_df = read_table(spark, logger, dts_silver_table)
+        if dts_df is None or dts_df.count() == 0:
+            logger.warning(f"No data found in {dts_silver_table}")
+            return False
+
+        bucketed_df = dts_bucket(dts_df, bucket_size_seconds)
+        bucket_times_df = generate_bucket_times(spark, bucket_size_seconds)
+        expanded_buckets = expand_buckets(bucket_times_df, dts_df)
+
+        min_max_df = dts_get_min_max(bucketed_df, expanded_buckets)
+        sum_df = dts_get_sum(bucketed_df, expanded_buckets)
+        count_df = dts_get_count(bucketed_df, expanded_buckets)
+
+        gold_df = dts_get_gold(min_max_df, sum_df, count_df, bucket_size_seconds, spark)
+        if gold_df.rdd.isEmpty():
+            logger.info("Gold DataFrame is empty after aggregations.")
+            return False
+
+        logger.info(f"Merging into Delta table: {dts_gold_table}")
+        delta_table = read_delta_table(spark, logger, dts_gold_table)
+        (
+            delta_table.alias("target")
+            .merge(
+                gold_df.alias("source"),
+                """
+                target.asset_id = source.asset_id AND
+                target.parameter = source.parameter AND
+                target.timestamp = source.timestamp AND
+                target.depth = source.depth
+                """
+            )
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+        deduplicate_gold_table(spark,dts_gold_table,bucket_size_seconds)
+        logger.info("Merge complete.")
+        return True
+    except Exception as e:
+        logger.error(f"Error in resample_gold_dts: {e}")
+        raise
+
+# COMMAND ----------
+
+# COMMAND ----------
+
+app_name="dts_summary"
+job_start_timestamp = datetime.now()
+date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+logger = configure_logger(app_name, date)
+
+
+# COMMAND ----------
+
+
+# COMMAND ----------
+
+resample_gold_dts(
+    spark,
+    logger,
+    "`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.silver_zone.dts1",
+    "asset_id",
+    "`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.gold_zone.dts_60",
+    60
+)
