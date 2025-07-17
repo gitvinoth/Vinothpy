@@ -1,0 +1,1 @@
+RuntimeError: Error in deduplicate_gold_table_dts: [DELTA_UNSUPPORTED_MULTI_COL_IN_PREDICATE] Multi-column In predicates are not supported in the DELETE condition.
