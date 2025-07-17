@@ -1,0 +1,23 @@
+
+
+
+2025-07-17 10:27:55,890~|~dts_summary~|~ERROR~|~Error in resample_load_dts_data_summarize: Error in dts_bucket: [DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE] Cannot resolve "unix_timestamp(timestamp, yyyy-MM-dd HH:mm:ss)" due to data type mismatch: Parameter 1 requires the ("STRING" or "DATE" or "TIMESTAMP" or "TIMESTAMP_NTZ") type, however "timestamp" has the type "BIGINT".;
+
+
+def dts_silver_bucket(df: DataFrame, bucket_size_seconds: int) -> DataFrame:
+    """Assign each record to its bucket."""
+    try:
+        current_day_start = unix_timestamp(date_trunc("DAY", current_timestamp()))
+        current_ts = unix_timestamp(current_timestamp())
+        return df.filter(
+            col("asset_id").isNotNull() &
+            col("depth").isNotNull() &
+            col("temperature").isNotNull() &
+            (col("timestamp") >= current_day_start) &
+            (col("timestamp") <= current_ts)
+        ).withColumn(
+            "bucket_start",
+            ((col("timestamp") - current_day_start) / bucket_size_seconds).cast("long") * bucket_size_seconds + current_day_start
+        )
+    except Exception as e:
+        raise RuntimeError(f"dts_bucket failed: {e}")
