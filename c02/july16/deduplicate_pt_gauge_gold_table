@@ -1,0 +1,91 @@
+def deduplicate_pt_gauge_gold_table(
+    spark,
+    pt_gauge_gold_table: str,
+    bucket_size_seconds: int,
+    logger=None
+):
+    """
+    Deduplicate PT gauge gold table so only one unique (asset_id, parameter, bucket_start) record remains:
+      - For temperature_min/pressure_min: keep row with minimum value and its timestamp
+      - For temperature_max/pressure_max: keep row with maximum value and its timestamp
+      - For temperature_sum/pressure_sum: sum values for the bucket, keep earliest timestamp in the bucket
+      - For temperature_count/pressure_count: sum values for the bucket, keep earliest timestamp in the bucket
+    """
+    from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
+
+    try:
+        df = spark.read.table(pt_gauge_gold_table)
+
+        # Ensure bucket_start is correct
+        df = df.withColumn(
+            "bucket_start",
+            (F.col("timestamp") / bucket_size_seconds).cast("long") * bucket_size_seconds
+        )
+
+        # MIN: Get the min value and its timestamp for both temperature and pressure
+        min_window = Window.partitionBy("asset_id", "parameter", "bucket_start") \
+            .orderBy(F.col("value").asc(), F.col("timestamp").asc())
+        min_df = (
+            df.filter(F.col("parameter").isin("temperature_min", "pressure_min"))
+            .withColumn("rn", F.row_number().over(min_window))
+            .filter(F.col("rn") == 1)
+            .drop("rn")
+        )
+
+        # MAX: Get the max value and its timestamp for both temperature and pressure
+        max_window = Window.partitionBy("asset_id", "parameter", "bucket_start") \
+            .orderBy(F.col("value").desc(), F.col("timestamp").asc())
+        max_df = (
+            df.filter(F.col("parameter").isin("temperature_max", "pressure_max"))
+            .withColumn("rn", F.row_number().over(max_window))
+            .filter(F.col("rn") == 1)
+            .drop("rn")
+        )
+
+        # SUM: sum all values, keep earliest timestamp (for both temperature and pressure)
+        sum_df = (
+            df.filter(F.col("parameter").isin("temperature_sum", "pressure_sum"))
+            .groupBy("asset_id", "parameter", "bucket_start")
+            .agg(
+                F.sum("value").alias("value"),
+                F.min("timestamp").alias("timestamp")
+            )
+        )
+
+        # COUNT: sum all values, keep earliest timestamp (for both temperature and pressure)
+        count_df = (
+            df.filter(F.col("parameter").isin("temperature_count", "pressure_count"))
+            .groupBy("asset_id", "parameter", "bucket_start")
+            .agg(
+                F.sum("value").alias("value"),
+                F.min("timestamp").alias("timestamp")
+            )
+        )
+
+        cols = ["asset_id", "parameter", "timestamp", "value", "bucket_start"]
+        min_df = min_df.select(*cols)
+        max_df = max_df.select(*cols)
+        sum_df = sum_df.select(*cols)
+        count_df = count_df.select(*cols)
+
+        deduped = min_df.unionByName(max_df).unionByName(sum_df).unionByName(count_df)
+
+        # Overwrite the gold table
+        (
+            deduped
+            .drop("bucket_start")
+            .write
+            .format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .saveAsTable(pt_gauge_gold_table)
+        )
+
+        if logger:
+            logger.info("Deduplication complete for pt_gauge gold table.")
+
+    except Exception as e:
+        if logger:
+            logger.error(f"Error in deduplicate_pt_gauge_gold_table: {e}")
+        raise
