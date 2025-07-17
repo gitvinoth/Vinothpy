@@ -1,0 +1,96 @@
+def deduplicate_gold_table_dts(
+    spark,
+    logger,
+    gold_table: str,
+    gold_df: DataFrame,
+    bucket_size_seconds: int
+) -> None:
+    """
+    Deduplicate the gold summary table for DTS by:
+    1. Aligning all input records to bucket_start.
+    2. Extracting per-bucket min, max, sum, count correctly.
+    3. Deleting overlapping records from gold table.
+       - SUM/COUNT: by (asset_id, parameter, depth, bucket_start)
+       - MIN/MAX: by (asset_id, depth) — full wipe to handle sparse buckets.
+    4. Appending deduplicated DataFrame into the gold table.
+    """
+    try:
+        logger.info("Aligning gold_df to bucket_start...")
+        aligned_df = gold_df.withColumn(
+            "bucket_start",
+            (F.col("timestamp") / bucket_size_seconds).cast("long") * bucket_size_seconds
+        )
+        # Extract parameter-wise deduplicated values
+        def get_min_max_sum_count(aligned_df, param, is_min=True):
+            if param in ["temperature_min", "temperature_max"]:
+                order_col = F.col("value").asc() if is_min else F.col("value").desc()
+                ts_col = F.col("timestamp").asc() if is_min else F.col("timestamp").desc()
+                window = Window.partitionBy("asset_id", "depth", "parameter", "bucket_start").orderBy(order_col, ts_col)
+                return (
+                    aligned_df.filter(F.col("parameter") == param)
+                    .withColumn("rn", F.row_number().over(window))
+                    .filter(F.col("rn") == 1)
+                    .drop("rn")
+                )
+            else:
+                return (
+                    aligned_df.filter(F.col("parameter") == param)
+                    .groupBy("asset_id", "depth", "parameter", "bucket_start")
+                    .agg(
+                        F.sum("value").alias("value"),
+                        F.min("timestamp").alias("timestamp")
+                    )
+                )
+        logger.info("Generating deduplicated parameter-wise frames...")
+        min_df = get_min_max_sum_count(aligned_df, "temperature_min", is_min=True)
+        max_df = get_min_max_sum_count(aligned_df, "temperature_max", is_min=False)
+        sum_df = get_min_max_sum_count(aligned_df, "temperature_sum")
+        count_df = get_min_max_sum_count(aligned_df, "temperature_count")
+        # Align schema
+        cols = ["asset_id", "parameter", "timestamp", "value", "depth", "bucket_start"]
+        deduped_df = min_df.select(*cols).unionByName(
+            max_df.select(*cols)
+        ).unionByName(
+            sum_df.select(*cols)
+        ).unionByName(
+            count_df.select(*cols)
+        )
+        logger.info("Registered deduped_gold_view")
+        deduped_df.createOrReplaceTempView("deduped_gold_view")
+        # Step 1: Delete SUM/COUNT using EXISTS
+        delete_sum_count = f"""
+        DELETE FROM {gold_table} AS target
+        WHERE target.parameter IN ('temperature_sum', 'temperature_count')
+        AND EXISTS (
+            SELECT 1 FROM deduped_gold_view AS source
+            WHERE source.parameter = target.parameter
+              AND source.asset_id = target.asset_id
+              AND source.depth = target.depth
+              AND source.timestamp = target.timestamp
+        )
+        """
+        spark.sql(delete_sum_count)
+        logger.info("Deleted overlapping SUM/COUNT records.")
+        # Step 2: Delete MIN/MAX for same asset_id, depth using EXISTS
+        # Compute current_day_start as epoch (int)
+        current_day_start = spark.sql("SELECT unix_timestamp(date_trunc('DAY', current_timestamp()))").collect()[0][0]
+        delete_min_max = f"""
+        DELETE FROM {gold_table} AS target
+        WHERE target.parameter IN ('temperature_min', 'temperature_max')
+        AND target.timestamp >= {current_day_start}
+        AND EXISTS (
+            SELECT 1 FROM deduped_gold_view AS source
+            WHERE source.asset_id = target.asset_id
+              AND source.depth = target.depth
+        )
+        """
+        spark.sql(delete_min_max)
+        logger.info("Deleted all MIN/MAX records for updated assets/depths.")
+        # Step 3: Append clean results
+        logger.info("Appending deduplicated results to gold table...")
+        deduped_df_to_write = deduped_df.select("asset_id", "parameter", "timestamp", "value", "depth")
+        write_table(logger, deduped_df_to_write, "append", gold_table)
+        logger.info("Successfully appended deduplicated gold records.")
+    except Exception as e:
+        logger.error(f"Error in deduplicate_gold_table_dts: {e}")
+        raise RuntimeError(f"Error in deduplicate_gold_table_dts: {e}")
