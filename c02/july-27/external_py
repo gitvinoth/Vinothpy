@@ -1,0 +1,226 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC - Read rules from the `bronze_zone.external_rules` table.
+# MAGIC - Extract all rule-related information.
+# MAGIC - Group rules by `sensor_type`.
+# MAGIC - For each rule, find the Python file specified in the `external_rules` table.
+# MAGIC - For each `sensor_type`, loop through its rules and run the associated Python script's `main()` function.
+# MAGIC - Ensure all necessary data from the `sensor` `silver_zone` table is passed correctly to each script.
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Users/vinoth.ravi@bakerhughes.com/utils/logger
+
+# COMMAND ----------
+
+from datetime import datetime
+app_name = "External_Rule_Execution_Engine"
+job_start_timestamp = datetime.now()
+date = job_start_timestamp.strftime("%Y-%m-%d-%H-%M-%S-%f")
+logger = configure_logger(app_name, date)
+
+# COMMAND ----------
+
+from pyspark.sql.functions import col
+from typing import Dict, Any
+from typing import List, Dict, Any
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from pyspark.sql.functions import when
+import time
+
+# COMMAND ----------
+
+# Base time config for simulation
+epoch_base = int(time.mktime(time.strptime("2021-07-10 16:00:00", "%Y-%m-%d %H:%M:%S")))
+
+# Define current_time_range for this rule execution
+current_time_range = {
+    "start_time": epoch_base + 3600,  # 17:00
+    "end_time": epoch_base + 5400     # 17:30
+}
+current_time_range
+
+# COMMAND ----------
+
+def get_input_df_from_silver(sensor_type: str, parameter: str, catalog: str, current_time_range: Dict[str, int], duration: int, logger):
+    start = current_time_range["start_time"] - duration
+    end = current_time_range["end_time"]
+
+    try:
+        if sensor_type == "pt_gauge":
+            query = f"""
+                SELECT epoch_timestamp, {parameter}
+                FROM {catalog}.silver_zone.pt_gauge_ext
+                WHERE {parameter} IS NOT NULL
+                  AND epoch_timestamp >= {start}
+                  AND epoch_timestamp < {end}
+            """
+            logger.info(f"pt_gauge silver df has been loaded for timestamp: {current_time_range}")
+        elif sensor_type == "dss":
+            query = f"""
+                SELECT epoch_timestamp, {parameter}
+                FROM {catalog}.silver_zone.dss
+                WHERE {parameter} IS NOT NULL
+                  AND epoch_timestamp >= {start}
+                  AND epoch_timestamp < {end}
+            """
+            logger.info(f"dss silver df has been loaded for timestamp: {current_time_range}")
+        elif sensor_type == "flowmeter":
+            query = f"""
+                SELECT timestamp AS epoch_timestamp, {parameter}
+                FROM {catalog}.silver_zone.flowmeter
+                WHERE {parameter} IS NOT NULL
+                  AND timestamp >= {start}
+                  AND timestamp < {end}
+            """
+            logger.info(f"flowmeter silver df has been loaded for timestamp: {current_time_range}")
+        elif sensor_type == "micro_seismic":
+            query = f"""
+                SELECT epoch_timestamp, {parameter}
+                FROM {catalog}.silver_zone.microseismic_events
+                WHERE {parameter} IS NOT NULL
+                  AND epoch_timestamp >= {start}
+                  AND epoch_timestamp < {end}
+            """
+            logger.info(f"micro_seismic silver df has been loaded for timestamp: {current_time_range}")
+        else:
+            raise ValueError(f"Unknown sensor_type: {sensor_type}")
+
+        return spark.sql(query)
+    except Exception as e:
+        raise ValueError(f"Invalid sensor type or error in input parameters: {e}")
+
+# COMMAND ----------
+
+# Load all external rules for the given sensor_type
+
+external_rules_df = spark.sql(f"""
+    SELECT *
+    FROM `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.external_rules
+    WHERE sensor_type = 'pt_gauge'
+""")
+external_rules = external_rules_df.collect()
+external_rules
+
+# COMMAND ----------
+
+sensor_type='pt_gauge'
+catalog="`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`"
+
+# COMMAND ----------
+
+
+for rule_row in external_rules:
+    rule_dict = rule_row.asDict()
+    rule_id = rule_dict["rule_id"]
+    duration = int(rule_dict["duration"])
+    threshold = float(rule_dict["threshold"])
+    parameter = rule_dict["parameter"]
+    operator = rule_dict["operator"]
+    path = rule_dict["Path"]
+
+    logger.info(f"Processing external rule: {rule_id} from path: {path}")
+
+    # Load Python script content from ADLS
+    try:
+        script_content = dbutils.fs.head(path)
+        exec(script_content)
+    except Exception as e:
+        logger.error(f"Failed to load/execute script from {path}: {str(e)}")
+        continue
+
+    # Read filtered sensor data directly from silver table
+    try:
+        df = get_input_df_from_silver(sensor_type, parameter, catalog, current_time_range, duration, logger)
+    except Exception as e:
+        logger.error(f"Failed to read input data for rule {rule_id}: {str(e)}")
+        continue
+
+    # Build rule structure expected by external __main()
+    rule_struct = {
+        "rule_id": rule_id,
+        "threshold": threshold,
+        "duration": duration,
+        "parameter": parameter,
+        "operator": operator
+    }
+
+    # Invoke main function from external rule script
+    try:
+        __main__(df, current_time_range, rule_struct)
+        logger.info(f"Successfully executed external rule: {rule_id}")
+    except Exception as e:
+        logger.error(f"Error executing rule {rule_id}: {str(e)}")
+
+
+
+# COMMAND ----------
+
+def create_anomaly(anomalies: List[Dict[str, Any]], rule: Dict[str, Any]):
+    logger = logging.getLogger("ZScoreRule")
+    logger.info("Sending anomalies to the sink will be Service bus")
+    print("Anomalies Sent:", anomalies)
+    logger.info("Anomalies Created Successfully using Create_anamoly")
+
+# COMMAND ----------
+
+def pyscript_exe(catalog, sensor_type, logger):
+    try:
+        external_rules_df = spark.sql(f"""
+            SELECT *
+            FROM {catalog}.bronze_zone.external_rules
+            WHERE sensor_type = '{sensor_type}'
+        """)
+        external_rules = external_rules_df.collect()
+
+        logger.info(f"Found {len(external_rules)} rules for sensor_type: {sensor_type}")
+
+        for rule_row in external_rules:
+            rule_dict = rule_row.asDict()
+            rule_id = rule_dict["rule_id"]
+            duration = int(rule_dict["duration"])
+            threshold = float(rule_dict["threshold"])
+            parameter = rule_dict["parameter"]
+            operator = rule_dict["operator"]
+            path = rule_dict["Path"]
+
+            logger.info(f"Processing external rule: {rule_id} from path: {path}")
+
+            # Load Python script content from ADLS
+            try:
+                script_content = dbutils.fs.head(path)
+                exec(script_content)
+            except Exception as e:
+                logger.error(f"Failed to load/execute script from {path}: {str(e)}")
+                continue
+
+            # Read filtered sensor data directly from silver table
+            try:
+                df = get_input_df_from_silver(sensor_type, parameter, catalog, current_time_range, duration, logger)
+            except Exception as e:
+                logger.error(f"Failed to read input data for rule {rule_id}: {str(e)}")
+                continue
+
+            # Build rule structure expected by external __main()
+            rule_struct = {
+                "rule_id": rule_id,
+                "threshold": threshold,
+                "duration": duration,
+                "parameter": parameter,
+                "operator": operator
+            }
+
+            # Invoke main function from external rule script
+            try:
+                __main__(df, current_time_range, rule_struct)
+                logger.info(f"Successfully executed external rule: {rule_id}")
+            except Exception as e:
+                logger.error(f"Error executing rule {rule_id}: {str(e)}")
+
+    except Exception as e:
+        logger.error(f"Failed to execute pyscript_exe: {str(e)}")
+
+# COMMAND ----------
+
+pyscript_exe("`ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`", "pt_gauge", logger)
