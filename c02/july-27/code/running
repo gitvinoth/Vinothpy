@@ -1,0 +1,2 @@
+engine = ExternalRuleEngine(sensor_type="pt_gauge", catalog="`ccus_...`", logger=logger)
+engine.execute()
