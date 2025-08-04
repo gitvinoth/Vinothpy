@@ -1,0 +1,66 @@
+import concurrent.futures
+from typing import Dict, Any
+from pyspark.sql import DataFrame
+from rule_engine import RuleEngine  # your existing base class
+
+class ExternalRuleEngine(RuleEngine):
+    def __init__(self, sensor_type: str, catalog: str, logger):
+        super().__init__(sensor_type, catalog, logger)
+
+    def _execute_external_rule(self, rule: Dict[str, Any], current_time_range: Dict[str, int]):
+        rule_id = rule["rule_id"]
+        path = rule["Path"]
+        parameter = rule["parameter"]
+
+        try:
+            # Load script content dynamically
+            script_content = dbutils.fs.head(path)
+            script_namespace = {}
+            exec(script_content, script_namespace)
+
+            # Get input dataframe for the rule
+            df = self.get_input_df(rule, current_time_range)
+
+            # Build rule_struct
+            rule_struct = {
+                "rule_id": rule["rule_id"],
+                "threshold": float(rule["threshold"]),
+                "duration": int(rule["duration"]),
+                "parameter": parameter,
+                "operator": rule["operator"]
+            }
+
+            if "__main__" in script_namespace:
+                script_namespace["__main__"](df, current_time_range, rule_struct)
+                self.logger.info(f"✅ Rule {rule_id} executed successfully.")
+            else:
+                self.logger.error(f"⛔ Rule {rule_id} does not contain a __main__ method.")
+
+        except Exception as e:
+            self.logger.error(f"🔥 Failed to execute rule {rule_id}: {str(e)}")
+
+    def get_input_df(self, rule: Dict[str, Any], time_range: Dict[str, int]) -> DataFrame:
+        """This function overrides or uses base method to get silver_zone filtered data."""
+        return get_input_df_from_silver(
+            self.sensor_type,
+            rule["parameter"],
+            self.catalog,
+            time_range,
+            int(rule["duration"]),
+            self.logger
+        )
+
+    def execute(self):
+        self.logger.info(f"🔍 Fetching rules for sensor_type: {self.sensor_type}")
+        rules_df = self.load_rules_table("bronze_zone.external_rules")
+        rules = rules_df.collect()
+
+        current_time_range = self.compute_time_range()
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(self._execute_external_rule, rule.asDict(), current_time_range)
+                for rule in rules
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
