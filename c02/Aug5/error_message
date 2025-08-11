@@ -1,0 +1,113 @@
+2025-08-11 15:39:38,691 - INFO - Generating deduplicated parameter-wise frames...
+2025-08-11 15:39:39,482~|~load_resample_gold_pt_gauge~|~INFO~|~Registered deduped_gold_view
+2025-08-11 15:39:39,482 - INFO - Registered deduped_gold_view
+2025-08-11 15:39:39,949~|~load_resample_gold_pt_gauge~|~ERROR~|~Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+2025-08-11 15:39:39,949 - ERROR - Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+2025-08-11 15:39:39,956~|~load_resample_gold_pt_gauge~|~ERROR~|~Error in resample_gold_dts: Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+2025-08-11 15:39:39,956 - ERROR - Error in resample_gold_dts: Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+2025-08-11 15:39:39,958~|~load_resample_gold_pt_gauge~|~ERROR~|~Unhandled error in main(): Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+Traceback (most recent call last):
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py", line 260, in deduplicate_gold_table_dts
+    spark.sql(delete_sum_count)
+  File "/usr/local/spark/python/pyspark/sql/session.py", line 1440, in sql
+    return DataFrame(self._jsparkSession.sql(sqlQuery, litArgs), self)
+  File "/usr/local/spark/python/lib/py4j-0.10.9.7-src.zip/py4j/java_gateway.py", line 1322, in __call__
+    return_value = get_return_value(
+  File "/usr/local/spark/python/pyspark/errors/exceptions/captured.py", line 175, in deco
+    raise converted from None
+pyspark.errors.exceptions.captured.AnalysisException: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/resample_gold_main_caller.py", line 99, in main
+    success = resample_gold_dts(
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py", line 310, in resample_gold_dts
+    deduplicate_gold_table_dts(spark, logger, dts_gold_table, gold_df, bucket_size_seconds)
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py", line 273, in deduplicate_gold_table_dts
+    raise RuntimeError(f"Error in deduplicate_gold_table_dts: {e}")
+RuntimeError: Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+2025-08-11 15:39:39,958 - ERROR - Unhandled error in main(): Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+Traceback (most recent call last):
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py", line 260, in deduplicate_gold_table_dts
+    spark.sql(delete_sum_count)
+  File "/usr/local/spark/python/pyspark/sql/session.py", line 1440, in sql
+    return DataFrame(self._jsparkSession.sql(sqlQuery, litArgs), self)
+  File "/usr/local/spark/python/lib/py4j-0.10.9.7-src.zip/py4j/java_gateway.py", line 1322, in __call__
+    return_value = get_return_value(
+  File "/usr/local/spark/python/pyspark/errors/exceptions/captured.py", line 175, in deco
+    raise converted from None
+pyspark.errors.exceptions.captured.AnalysisException: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/resample_gold_main_caller.py", line 99, in main
+    success = resample_gold_dts(
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py", line 310, in resample_gold_dts
+    deduplicate_gold_table_dts(spark, logger, dts_gold_table, gold_df, bucket_size_seconds)
+  File "/home/jovyan/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py", line 273, in deduplicate_gold_table_dts
+    raise RuntimeError(f"Error in deduplicate_gold_table_dts: {e}")
+RuntimeError: Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+---------------------------------------------------------------------------
+AnalysisException                         Traceback (most recent call last)
+File ~/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py:260, in deduplicate_gold_table_dts(spark, logger, gold_table, gold_df, bucket_size_seconds)
+    259 delete_sum_count = f"DELETE FROM {gold_table} AS target WHERE target.parameter IN ('temperature_sum', 'temperature_count') AND target.timestamp >= {current_day_start} AND EXISTS (SELECT 1 FROM deduped_gold_view AS source WHERE source.parameter = target.parameter AND source.asset_id = target.asset_id AND source.depth = target.depth AND source.timestamp = target.timestamp)"
+--> 260 spark.sql(delete_sum_count)
+    261 logger.info("Deleted overlapping SUM/COUNT records.")
+
+File /usr/local/spark/python/pyspark/sql/session.py:1440, in SparkSession.sql(self, sqlQuery, args, **kwargs)
+   1439     litArgs = {k: _to_java_column(lit(v)) for k, v in (args or {}).items()}
+-> 1440     return DataFrame(self._jsparkSession.sql(sqlQuery, litArgs), self)
+   1441 finally:
+
+File /usr/local/spark/python/lib/py4j-0.10.9.7-src.zip/py4j/java_gateway.py:1322, in JavaMember.__call__(self, *args)
+   1321 answer = self.gateway_client.send_command(command)
+-> 1322 return_value = get_return_value(
+   1323     answer, self.gateway_client, self.target_id, self.name)
+   1325 for temp_arg in temp_args:
+
+File /usr/local/spark/python/pyspark/errors/exceptions/captured.py:175, in capture_sql_exception.<locals>.deco(*a, **kw)
+    172 if not isinstance(converted, UnknownException):
+    173     # Hide where the exception came from that shows a non-Pythonic
+    174     # JVM exception message.
+--> 175     raise converted from None
+    176 else:
+
+AnalysisException: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
+
+During handling of the above exception, another exception occurred:
+
+RuntimeError                              Traceback (most recent call last)
+File ~/work/bh-ccus-data-platform/src/etl/resample_gold_main_caller.py:120
+    117 # COMMAND ----------
+    119 if __name__ == "__main__":
+--> 120     main()  # pragma: no cover
+
+File ~/work/bh-ccus-data-platform/src/etl/resample_gold_main_caller.py:99, in main()
+     97     destination_table_name = get_table_name(catalog, "gold_zone", f"{source_table}_{bucket_size}")
+     98     logger.info(f"Invoking resample_gold_dts for table: {source_table_name}")
+---> 99     success = resample_gold_dts(
+    100         spark,
+    101         logger,
+    102         source_table_name,
+    103         partition_cols,
+    104         destination_table_name,
+    105         bucket_size,
+    106     )
+    107 else:
+    108     raise ValueError(f"Unsupported source_table: {source_table}")
+
+File ~/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py:310, in resample_gold_dts(spark, logger, dts_silver_table, partition_cols, dts_gold_table, bucket_size_seconds)
+    308     return False
+    309 logger.info(f"Deduplicating and appending into Delta table: {dts_gold_table}")
+--> 310 deduplicate_gold_table_dts(spark, logger, dts_gold_table, gold_df, bucket_size_seconds)
+    311 logger.info(f"Summary table for dts :{dts_gold_table} load completed.")
+    312 return True
+
+File ~/work/bh-ccus-data-platform/src/etl/load_resample_gold_dts.py:273, in deduplicate_gold_table_dts(spark, logger, gold_table, gold_df, bucket_size_seconds)
+    271 except Exception as e:
+    272     logger.error(f"Error in deduplicate_gold_table_dts: {e}")
+--> 273     raise RuntimeError(f"Error in deduplicate_gold_table_dts: {e}")
+
+RuntimeError: Error in deduplicate_gold_table_dts: Subqueries are not supported in the DELETE (condition = (((target.parameter IN ('temperature_sum', 'temperature_count')) AND (target.timestamp >= CAST(1754784000 AS BIGINT))) AND exists(target.parameter, target.asset_id, target.depth, target.timestamp))).
