@@ -1,0 +1,498 @@
+2025-08-18 17:07:03,843~|~dts_file_publish~|~INFO~|~Starting publish process.
+INFO:dts_file_publish:Starting publish process.
+2025-08-18 17:07:03,847~|~dts_file_publish~|~INFO~|~Start publish for time=1296428400, window=3600
+INFO:dts_file_publish:Start publish for time=1296428400, window=3600
+2025-08-18 17:07:03,848~|~dts_file_publish~|~INFO~|~Current window start time: 1296428400
+INFO:dts_file_publish:Current window start time: 1296428400
+2025-08-18 17:07:03,850~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:03,850~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:04,267~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296428400 and end_time: 1296431999
+INFO:dts_file_publish:Filtering data with start_time: 1296428400 and end_time: 1296431999
+2025-08-18 17:07:04,399~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:04,400~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:04,400~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296424800
+INFO:dts_file_publish:LW (<=1h) computed: 1296424800
+2025-08-18 17:07:04,401~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296424800 and end_time: 1296428399
+INFO:dts_file_publish:Filtering data with start_time: 1296424800 and end_time: 1296428399
+2025-08-18 17:07:04,528~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:04,529~|~dts_file_publish~|~INFO~|~Start publish for time=1296432000, window=3600
+INFO:dts_file_publish:Start publish for time=1296432000, window=3600
+2025-08-18 17:07:04,530~|~dts_file_publish~|~INFO~|~Current window start time: 1296432000
+INFO:dts_file_publish:Current window start time: 1296432000
+2025-08-18 17:07:04,530~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:04,531~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:04,849~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296432000 and end_time: 1296435599
+INFO:dts_file_publish:Filtering data with start_time: 1296432000 and end_time: 1296435599
+2025-08-18 17:07:04,977~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:04,978~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:04,979~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296428400
+INFO:dts_file_publish:LW (<=1h) computed: 1296428400
+2025-08-18 17:07:04,980~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296428400 and end_time: 1296431999
+INFO:dts_file_publish:Filtering data with start_time: 1296428400 and end_time: 1296431999
+2025-08-18 17:07:05,107~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:05,108~|~dts_file_publish~|~INFO~|~Start publish for time=1296435600, window=3600
+INFO:dts_file_publish:Start publish for time=1296435600, window=3600
+2025-08-18 17:07:05,109~|~dts_file_publish~|~INFO~|~Current window start time: 1296435600
+INFO:dts_file_publish:Current window start time: 1296435600
+2025-08-18 17:07:05,110~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:05,110~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:05,500~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296435600 and end_time: 1296439199
+INFO:dts_file_publish:Filtering data with start_time: 1296435600 and end_time: 1296439199
+2025-08-18 17:07:05,631~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:05,632~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:05,632~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296432000
+INFO:dts_file_publish:LW (<=1h) computed: 1296432000
+2025-08-18 17:07:05,633~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296432000 and end_time: 1296435599
+INFO:dts_file_publish:Filtering data with start_time: 1296432000 and end_time: 1296435599
+2025-08-18 17:07:05,759~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:05,760~|~dts_file_publish~|~INFO~|~Start publish for time=1296439200, window=3600
+INFO:dts_file_publish:Start publish for time=1296439200, window=3600
+2025-08-18 17:07:05,761~|~dts_file_publish~|~INFO~|~Current window start time: 1296439200
+INFO:dts_file_publish:Current window start time: 1296439200
+2025-08-18 17:07:05,761~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:05,762~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:06,064~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296439200 and end_time: 1296442799
+INFO:dts_file_publish:Filtering data with start_time: 1296439200 and end_time: 1296442799
+2025-08-18 17:07:06,192~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:06,193~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:06,193~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296435600
+INFO:dts_file_publish:LW (<=1h) computed: 1296435600
+2025-08-18 17:07:06,194~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296435600 and end_time: 1296439199
+INFO:dts_file_publish:Filtering data with start_time: 1296435600 and end_time: 1296439199
+2025-08-18 17:07:06,325~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:06,326~|~dts_file_publish~|~INFO~|~Start publish for time=1296442800, window=3600
+INFO:dts_file_publish:Start publish for time=1296442800, window=3600
+2025-08-18 17:07:06,327~|~dts_file_publish~|~INFO~|~Current window start time: 1296442800
+INFO:dts_file_publish:Current window start time: 1296442800
+2025-08-18 17:07:06,327~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:06,328~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:06,642~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296442800 and end_time: 1296446399
+INFO:dts_file_publish:Filtering data with start_time: 1296442800 and end_time: 1296446399
+2025-08-18 17:07:06,770~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:06,771~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:06,772~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296439200
+INFO:dts_file_publish:LW (<=1h) computed: 1296439200
+2025-08-18 17:07:06,772~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296439200 and end_time: 1296442799
+INFO:dts_file_publish:Filtering data with start_time: 1296439200 and end_time: 1296442799
+2025-08-18 17:07:06,915~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:06,916~|~dts_file_publish~|~INFO~|~Start publish for time=1296446400, window=3600
+INFO:dts_file_publish:Start publish for time=1296446400, window=3600
+2025-08-18 17:07:06,917~|~dts_file_publish~|~INFO~|~Current window start time: 1296446400
+INFO:dts_file_publish:Current window start time: 1296446400
+2025-08-18 17:07:06,917~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:06,918~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:07,229~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296446400 and end_time: 1296449999
+INFO:dts_file_publish:Filtering data with start_time: 1296446400 and end_time: 1296449999
+2025-08-18 17:07:07,356~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:07,357~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:07,357~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296442800
+INFO:dts_file_publish:LW (<=1h) computed: 1296442800
+2025-08-18 17:07:07,358~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296442800 and end_time: 1296446399
+INFO:dts_file_publish:Filtering data with start_time: 1296442800 and end_time: 1296446399
+2025-08-18 17:07:07,499~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:07,500~|~dts_file_publish~|~INFO~|~Start publish for time=1296450000, window=3600
+INFO:dts_file_publish:Start publish for time=1296450000, window=3600
+2025-08-18 17:07:07,501~|~dts_file_publish~|~INFO~|~Current window start time: 1296450000
+INFO:dts_file_publish:Current window start time: 1296450000
+2025-08-18 17:07:07,501~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:07,502~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:07,870~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296450000 and end_time: 1296453599
+INFO:dts_file_publish:Filtering data with start_time: 1296450000 and end_time: 1296453599
+2025-08-18 17:07:08,006~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:08,007~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:08,008~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296446400
+INFO:dts_file_publish:LW (<=1h) computed: 1296446400
+2025-08-18 17:07:08,008~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296446400 and end_time: 1296449999
+INFO:dts_file_publish:Filtering data with start_time: 1296446400 and end_time: 1296449999
+2025-08-18 17:07:08,136~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:08,137~|~dts_file_publish~|~INFO~|~Start publish for time=1296453600, window=3600
+INFO:dts_file_publish:Start publish for time=1296453600, window=3600
+2025-08-18 17:07:08,138~|~dts_file_publish~|~INFO~|~Current window start time: 1296453600
+INFO:dts_file_publish:Current window start time: 1296453600
+2025-08-18 17:07:08,138~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:08,139~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:08,458~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296453600 and end_time: 1296457199
+INFO:dts_file_publish:Filtering data with start_time: 1296453600 and end_time: 1296457199
+2025-08-18 17:07:08,589~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:08,590~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:08,591~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296450000
+INFO:dts_file_publish:LW (<=1h) computed: 1296450000
+2025-08-18 17:07:08,591~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296450000 and end_time: 1296453599
+INFO:dts_file_publish:Filtering data with start_time: 1296450000 and end_time: 1296453599
+2025-08-18 17:07:08,717~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:08,718~|~dts_file_publish~|~INFO~|~Start publish for time=1296457200, window=3600
+INFO:dts_file_publish:Start publish for time=1296457200, window=3600
+2025-08-18 17:07:08,719~|~dts_file_publish~|~INFO~|~Current window start time: 1296457200
+INFO:dts_file_publish:Current window start time: 1296457200
+2025-08-18 17:07:08,719~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:08,720~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:09,032~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296457200 and end_time: 1296460799
+INFO:dts_file_publish:Filtering data with start_time: 1296457200 and end_time: 1296460799
+2025-08-18 17:07:09,158~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:09,159~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:09,159~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296453600
+INFO:dts_file_publish:LW (<=1h) computed: 1296453600
+2025-08-18 17:07:09,160~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296453600 and end_time: 1296457199
+INFO:dts_file_publish:Filtering data with start_time: 1296453600 and end_time: 1296457199
+2025-08-18 17:07:09,288~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:09,289~|~dts_file_publish~|~INFO~|~Start publish for time=1296460800, window=3600
+INFO:dts_file_publish:Start publish for time=1296460800, window=3600
+2025-08-18 17:07:09,290~|~dts_file_publish~|~INFO~|~Current window start time: 1296460800
+INFO:dts_file_publish:Current window start time: 1296460800
+2025-08-18 17:07:09,291~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:09,291~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:09,670~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296460800 and end_time: 1296464399
+INFO:dts_file_publish:Filtering data with start_time: 1296460800 and end_time: 1296464399
+2025-08-18 17:07:09,799~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:09,800~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:09,801~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296457200
+INFO:dts_file_publish:LW (<=1h) computed: 1296457200
+2025-08-18 17:07:09,801~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296457200 and end_time: 1296460799
+INFO:dts_file_publish:Filtering data with start_time: 1296457200 and end_time: 1296460799
+2025-08-18 17:07:09,945~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:09,946~|~dts_file_publish~|~INFO~|~Start publish for time=1296464400, window=3600
+INFO:dts_file_publish:Start publish for time=1296464400, window=3600
+2025-08-18 17:07:09,947~|~dts_file_publish~|~INFO~|~Current window start time: 1296464400
+INFO:dts_file_publish:Current window start time: 1296464400
+2025-08-18 17:07:09,947~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:09,948~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:10,283~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296464400 and end_time: 1296467999
+INFO:dts_file_publish:Filtering data with start_time: 1296464400 and end_time: 1296467999
+2025-08-18 17:07:10,412~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:10,413~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:10,414~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296460800
+INFO:dts_file_publish:LW (<=1h) computed: 1296460800
+2025-08-18 17:07:10,414~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296460800 and end_time: 1296464399
+INFO:dts_file_publish:Filtering data with start_time: 1296460800 and end_time: 1296464399
+2025-08-18 17:07:10,547~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:10,548~|~dts_file_publish~|~INFO~|~Start publish for time=1296468000, window=3600
+INFO:dts_file_publish:Start publish for time=1296468000, window=3600
+2025-08-18 17:07:10,548~|~dts_file_publish~|~INFO~|~Current window start time: 1296468000
+INFO:dts_file_publish:Current window start time: 1296468000
+2025-08-18 17:07:10,549~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:10,549~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:10,884~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296468000 and end_time: 1296471599
+INFO:dts_file_publish:Filtering data with start_time: 1296468000 and end_time: 1296471599
+2025-08-18 17:07:11,023~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:11,024~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:11,025~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296464400
+INFO:dts_file_publish:LW (<=1h) computed: 1296464400
+2025-08-18 17:07:11,025~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296464400 and end_time: 1296467999
+INFO:dts_file_publish:Filtering data with start_time: 1296464400 and end_time: 1296467999
+2025-08-18 17:07:11,159~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:11,160~|~dts_file_publish~|~INFO~|~Start publish for time=1296471600, window=3600
+INFO:dts_file_publish:Start publish for time=1296471600, window=3600
+2025-08-18 17:07:11,160~|~dts_file_publish~|~INFO~|~Current window start time: 1296471600
+INFO:dts_file_publish:Current window start time: 1296471600
+2025-08-18 17:07:11,161~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:11,162~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:11,492~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296471600 and end_time: 1296475199
+INFO:dts_file_publish:Filtering data with start_time: 1296471600 and end_time: 1296475199
+2025-08-18 17:07:11,624~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:11,625~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:11,626~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296468000
+INFO:dts_file_publish:LW (<=1h) computed: 1296468000
+2025-08-18 17:07:11,627~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296468000 and end_time: 1296471599
+INFO:dts_file_publish:Filtering data with start_time: 1296468000 and end_time: 1296471599
+2025-08-18 17:07:11,757~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:11,758~|~dts_file_publish~|~INFO~|~Start publish for time=1296475200, window=3600
+INFO:dts_file_publish:Start publish for time=1296475200, window=3600
+2025-08-18 17:07:11,759~|~dts_file_publish~|~INFO~|~Current window start time: 1296475200
+INFO:dts_file_publish:Current window start time: 1296475200
+2025-08-18 17:07:11,759~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:11,760~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:12,085~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296475200 and end_time: 1296478799
+INFO:dts_file_publish:Filtering data with start_time: 1296475200 and end_time: 1296478799
+2025-08-18 17:07:12,215~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:12,216~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:12,217~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296471600
+INFO:dts_file_publish:LW (<=1h) computed: 1296471600
+2025-08-18 17:07:12,217~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296471600 and end_time: 1296475199
+INFO:dts_file_publish:Filtering data with start_time: 1296471600 and end_time: 1296475199
+2025-08-18 17:07:12,345~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:12,346~|~dts_file_publish~|~INFO~|~Start publish for time=1296478800, window=3600
+INFO:dts_file_publish:Start publish for time=1296478800, window=3600
+2025-08-18 17:07:12,346~|~dts_file_publish~|~INFO~|~Current window start time: 1296478800
+INFO:dts_file_publish:Current window start time: 1296478800
+2025-08-18 17:07:12,346~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:12,347~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:12,639~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296478800 and end_time: 1296482399
+INFO:dts_file_publish:Filtering data with start_time: 1296478800 and end_time: 1296482399
+2025-08-18 17:07:12,765~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:12,766~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:12,766~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296475200
+INFO:dts_file_publish:LW (<=1h) computed: 1296475200
+2025-08-18 17:07:12,767~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296475200 and end_time: 1296478799
+INFO:dts_file_publish:Filtering data with start_time: 1296475200 and end_time: 1296478799
+2025-08-18 17:07:12,894~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:12,895~|~dts_file_publish~|~INFO~|~Start publish for time=1296482400, window=3600
+INFO:dts_file_publish:Start publish for time=1296482400, window=3600
+2025-08-18 17:07:12,896~|~dts_file_publish~|~INFO~|~Current window start time: 1296482400
+INFO:dts_file_publish:Current window start time: 1296482400
+2025-08-18 17:07:12,896~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:12,896~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:13,275~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296482400 and end_time: 1296485999
+INFO:dts_file_publish:Filtering data with start_time: 1296482400 and end_time: 1296485999
+2025-08-18 17:07:13,403~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:13,403~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:13,404~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296478800
+INFO:dts_file_publish:LW (<=1h) computed: 1296478800
+2025-08-18 17:07:13,404~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296478800 and end_time: 1296482399
+INFO:dts_file_publish:Filtering data with start_time: 1296478800 and end_time: 1296482399
+2025-08-18 17:07:13,528~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:13,529~|~dts_file_publish~|~INFO~|~Start publish for time=1296486000, window=3600
+INFO:dts_file_publish:Start publish for time=1296486000, window=3600
+2025-08-18 17:07:13,530~|~dts_file_publish~|~INFO~|~Current window start time: 1296486000
+INFO:dts_file_publish:Current window start time: 1296486000
+2025-08-18 17:07:13,530~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:13,531~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:14,007~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296486000 and end_time: 1296489599
+INFO:dts_file_publish:Filtering data with start_time: 1296486000 and end_time: 1296489599
+2025-08-18 17:07:14,135~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:14,136~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:14,137~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296482400
+INFO:dts_file_publish:LW (<=1h) computed: 1296482400
+2025-08-18 17:07:14,137~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296482400 and end_time: 1296485999
+INFO:dts_file_publish:Filtering data with start_time: 1296482400 and end_time: 1296485999
+2025-08-18 17:07:14,282~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:14,283~|~dts_file_publish~|~INFO~|~Start publish for time=1296489600, window=3600
+INFO:dts_file_publish:Start publish for time=1296489600, window=3600
+2025-08-18 17:07:14,283~|~dts_file_publish~|~INFO~|~Current window start time: 1296489600
+INFO:dts_file_publish:Current window start time: 1296489600
+2025-08-18 17:07:14,284~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:14,285~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:14,641~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296489600 and end_time: 1296493199
+INFO:dts_file_publish:Filtering data with start_time: 1296489600 and end_time: 1296493199
+2025-08-18 17:07:14,765~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:14,766~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:14,767~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296486000
+INFO:dts_file_publish:LW (<=1h) computed: 1296486000
+2025-08-18 17:07:14,767~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296486000 and end_time: 1296489599
+INFO:dts_file_publish:Filtering data with start_time: 1296486000 and end_time: 1296489599
+2025-08-18 17:07:14,896~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:14,897~|~dts_file_publish~|~INFO~|~Start publish for time=1296493200, window=3600
+INFO:dts_file_publish:Start publish for time=1296493200, window=3600
+2025-08-18 17:07:14,897~|~dts_file_publish~|~INFO~|~Current window start time: 1296493200
+INFO:dts_file_publish:Current window start time: 1296493200
+2025-08-18 17:07:14,898~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:14,898~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:15,236~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296493200 and end_time: 1296496799
+INFO:dts_file_publish:Filtering data with start_time: 1296493200 and end_time: 1296496799
+2025-08-18 17:07:15,433~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:15,434~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:15,435~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296489600
+INFO:dts_file_publish:LW (<=1h) computed: 1296489600
+2025-08-18 17:07:15,436~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296489600 and end_time: 1296493199
+INFO:dts_file_publish:Filtering data with start_time: 1296489600 and end_time: 1296493199
+2025-08-18 17:07:15,575~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:15,576~|~dts_file_publish~|~INFO~|~Start publish for time=1296496800, window=3600
+INFO:dts_file_publish:Start publish for time=1296496800, window=3600
+2025-08-18 17:07:15,577~|~dts_file_publish~|~INFO~|~Current window start time: 1296496800
+INFO:dts_file_publish:Current window start time: 1296496800
+2025-08-18 17:07:15,578~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:15,579~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:15,923~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296496800 and end_time: 1296500399
+INFO:dts_file_publish:Filtering data with start_time: 1296496800 and end_time: 1296500399
+2025-08-18 17:07:16,053~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:16,053~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:16,054~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296493200
+INFO:dts_file_publish:LW (<=1h) computed: 1296493200
+2025-08-18 17:07:16,055~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296493200 and end_time: 1296496799
+INFO:dts_file_publish:Filtering data with start_time: 1296493200 and end_time: 1296496799
+2025-08-18 17:07:16,187~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:16,188~|~dts_file_publish~|~INFO~|~Start publish for time=1296500400, window=3600
+INFO:dts_file_publish:Start publish for time=1296500400, window=3600
+2025-08-18 17:07:16,189~|~dts_file_publish~|~INFO~|~Current window start time: 1296500400
+INFO:dts_file_publish:Current window start time: 1296500400
+2025-08-18 17:07:16,189~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:16,190~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:16,636~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296500400 and end_time: 1296503999
+INFO:dts_file_publish:Filtering data with start_time: 1296500400 and end_time: 1296503999
+2025-08-18 17:07:16,761~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:16,762~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:16,763~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296496800
+INFO:dts_file_publish:LW (<=1h) computed: 1296496800
+2025-08-18 17:07:16,763~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296496800 and end_time: 1296500399
+INFO:dts_file_publish:Filtering data with start_time: 1296496800 and end_time: 1296500399
+2025-08-18 17:07:16,890~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:16,891~|~dts_file_publish~|~INFO~|~Start publish for time=1296504000, window=3600
+INFO:dts_file_publish:Start publish for time=1296504000, window=3600
+2025-08-18 17:07:16,891~|~dts_file_publish~|~INFO~|~Current window start time: 1296504000
+INFO:dts_file_publish:Current window start time: 1296504000
+2025-08-18 17:07:16,892~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:16,892~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:17,232~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296504000 and end_time: 1296507599
+INFO:dts_file_publish:Filtering data with start_time: 1296504000 and end_time: 1296507599
+2025-08-18 17:07:17,365~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:17,366~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:17,366~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296500400
+INFO:dts_file_publish:LW (<=1h) computed: 1296500400
+2025-08-18 17:07:17,367~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296500400 and end_time: 1296503999
+INFO:dts_file_publish:Filtering data with start_time: 1296500400 and end_time: 1296503999
+2025-08-18 17:07:17,491~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:17,492~|~dts_file_publish~|~INFO~|~Start publish for time=1296507600, window=3600
+INFO:dts_file_publish:Start publish for time=1296507600, window=3600
+2025-08-18 17:07:17,493~|~dts_file_publish~|~INFO~|~Current window start time: 1296507600
+INFO:dts_file_publish:Current window start time: 1296507600
+2025-08-18 17:07:17,493~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:17,494~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:17,897~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296507600 and end_time: 1296511199
+INFO:dts_file_publish:Filtering data with start_time: 1296507600 and end_time: 1296511199
+2025-08-18 17:07:18,024~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:18,025~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:18,025~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296504000
+INFO:dts_file_publish:LW (<=1h) computed: 1296504000
+2025-08-18 17:07:18,026~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296504000 and end_time: 1296507599
+INFO:dts_file_publish:Filtering data with start_time: 1296504000 and end_time: 1296507599
+2025-08-18 17:07:18,156~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:18,157~|~dts_file_publish~|~INFO~|~Start publish for time=1296511200, window=3600
+INFO:dts_file_publish:Start publish for time=1296511200, window=3600
+2025-08-18 17:07:18,158~|~dts_file_publish~|~INFO~|~Current window start time: 1296511200
+INFO:dts_file_publish:Current window start time: 1296511200
+2025-08-18 17:07:18,158~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:18,159~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:18,485~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296511200 and end_time: 1296514799
+INFO:dts_file_publish:Filtering data with start_time: 1296511200 and end_time: 1296514799
+2025-08-18 17:07:18,611~|~dts_file_publish~|~INFO~|~CW: no data; skipping.
+INFO:dts_file_publish:CW: no data; skipping.
+2025-08-18 17:07:18,612~|~dts_file_publish~|~INFO~|~Inside last_window_start_time()
+INFO:dts_file_publish:Inside last_window_start_time()
+2025-08-18 17:07:18,613~|~dts_file_publish~|~INFO~|~LW (<=1h) computed: 1296507600
+INFO:dts_file_publish:LW (<=1h) computed: 1296507600
+2025-08-18 17:07:18,613~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296507600 and end_time: 1296511199
+INFO:dts_file_publish:Filtering data with start_time: 1296507600 and end_time: 1296511199
+2025-08-18 17:07:18,751~|~dts_file_publish~|~INFO~|~LW: no data; skipping backfill.
+INFO:dts_file_publish:LW: no data; skipping backfill.
+2025-08-18 17:07:18,752~|~dts_file_publish~|~INFO~|~Start publish for time=1296514800, window=3600
+INFO:dts_file_publish:Start publish for time=1296514800, window=3600
+2025-08-18 17:07:18,753~|~dts_file_publish~|~INFO~|~Current window start time: 1296514800
+INFO:dts_file_publish:Current window start time: 1296514800
+2025-08-18 17:07:18,753~|~dts_file_publish~|~INFO~|~Reading DTS bronze table...
+INFO:dts_file_publish:Reading DTS bronze table...
+2025-08-18 17:07:18,754~|~dts_file_publish~|~INFO~|~Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+INFO:dts_file_publish:Reading table : `ccus_dd40badc-44a8-4c24-994a-ab80edc83478_dev_03`.bronze_zone.dts_adm2011
+2025-08-18 17:07:19,090~|~dts_file_publish~|~INFO~|~Filtering data with start_time: 1296514800 and end_time: 1296518399
+INFO:dts_file_publish:Filtering data with start_time: 1296514800 and end_time: 1296518399
+2025-08-18 17:07:19,241~|~dts_file_publish~|~INFO~|~CW: data present, publishing...
+INFO:dts_file_publish:CW: data present, publishing...
+2025-08-18 17:07:19,524~|~dts_file_publish~|~ERROR~|~Error in dts_file_publish : Column asset_id#8700430 are ambiguous. It's probably because you joined several Datasets together, and some of these Datasets are the same. This column points to one of the Datasets but Spark is unable to figure out which one. Please alias the Datasets with different names via `Dataset.as` before joining them, and specify the column using qualified name, e.g. `df.as("a").join(df.as("b"), $"a.id" > $"b.id")`. You can also set spark.sql.analyzer.failAmbiguousSelfJoin to false to disable this check.
+ERROR:dts_file_publish:Error in dts_file_publish : Column asset_id#8700430 are ambiguous. It's probably because you joined several Datasets together, and some of these Datasets are the same. This column points to one of the Datasets but Spark is unable to figure out which one. Please alias the Datasets with different names via `Dataset.as` before joining them, and specify the column using qualified name, e.g. `df.as("a").join(df.as("b"), $"a.id" > $"b.id")`. You can also set spark.sql.analyzer.failAmbiguousSelfJoin to false to disable this check.
+2025-08-18 17:07:19,525~|~dts_file_publish~|~ERROR~|~Error in dts_data_publish : Column asset_id#8700430 are ambiguous. It's probably because you joined several Datasets together, and some of these Datasets are the same. This column points to one of the Datasets but Spark is unable to figure out which one. Please alias the Datasets with different names via `Dataset.as` before joining them, and specify the column using qualified name, e.g. `df.as("a").join(df.as("b"), $"a.id" > $"b.id")`. You can also set spark.sql.analyzer.failAmbiguousSelfJoin to false to disable this check.
+ERROR:dts_file_publish:Error in dts_data_publish : Column asset_id#8700430 are ambiguous. It's probably because you joined several Datasets together, and some of these Datasets are the same. This column points to one of the Datasets but Spark is unable to figure out which one. Please alias the Datasets with different names via `Dataset.as` before joining them, and specify the column using qualified name, e.g. `df.as("a").join(df.as("b"), $"a.id" > $"b.id")`. You can also set spark.sql.analyzer.failAmbiguousSelfJoin to false to disable this check.
