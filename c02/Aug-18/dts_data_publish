@@ -1,0 +1,33 @@
+def dts_data_publish(spark, logger, bronze_table_name: str, target_file_path: str, initation_time: int, time_window: int, sample_size: int):
+   try:
+       logger.info(f"Start publish for time={initation_time}, window={time_window}")
+       # Current Window
+       cw_start = current_window_start_time(spark, logger, initation_time, time_window)
+       logger.info("Reading DTS bronze table...")
+       dts_delta_table_bronze = read_delta_table(spark, logger, bronze_table_name)
+       dts_df_bronze = dts_delta_table_bronze.toDF()
+       cw_df = dts_data_filter(spark, logger, cw_start, time_window, dts_df_bronze)
+       if cw_df.limit(1).count() == 1:
+           logger.info("CW: data present, publishing...")
+           dts_file_publish(spark, logger, cw_df, target_file_path, cw_start, time_window, sample_size)
+           logger.info("CW publish complete.")
+       else:
+           logger.info("CW: no data; skipping.")
+       # Last Window (edge backfill)
+       lw_start = last_window_start_time(spark, logger, initation_time, time_window)
+       if lw_start == 0:
+           logger.info("LW: no backfill needed.")
+       else:
+           lw_df = dts_data_filter(spark, logger, lw_start, time_window, dts_df_bronze)
+           if lw_df.limit(1).count() == 1:
+               logger.info("LW: data present, publishing backfill...")
+               dts_file_publish(spark, logger, lw_df, target_file_path, lw_start, time_window, sample_size)
+               logger.info("LW publish complete.")
+           else:
+               logger.info("LW: no data; skipping backfill.")
+       if time_window == 2592000:
+           # Monthly truncate on silver table (per your original intent)
+           truncate_data_dts(spark, logger, dts_delta_table_bronze)
+   except Exception as e:
+       logger.error(f"Error in dts_data_publish : {str(e)}")
+       raise
