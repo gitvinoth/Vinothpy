@@ -1,0 +1,357 @@
+# Databricks notebook source
+import json
+import zipfile
+import os
+import time
+import calendar
+from unittest.mock import Mock, patch, MagicMock
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.types import StructType, StructField, ArrayType, LongType, IntegerType, DoubleType
+from pyspark.sql.functions import array, first, struct, col, udf, floor, array_min, split, avg, round
+import pyspark.sql.functions as F
+from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as t
+from pyspark.sql.window import Window
+
+
+# COMMAND ----------
+
+try:
+    if dbutils:
+        pass
+except NameError:
+    from src.utils.read_utility import read_delta_table
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/logger
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/read_utility
+
+# COMMAND ----------
+
+# MAGIC %run ../utils/write_utility
+
+# COMMAND ----------
+
+def dts_data_filter(spark, logger, start_time: int, time_window: int, dts_df_bronze) -> DataFrame:
+    try:
+        
+        end_time = start_time + time_window - 1
+
+        logger.info(f"Filtering data with start_time: {start_time} and end_time: {end_time}")
+
+        # Filter data only within start_time and end_time
+        dts_df_filtered = dts_df_bronze.filter(col("epoch_timestamp").between(start_time, end_time))
+
+        return dts_df_filtered
+
+    except Exception as e:
+        logger.error(f"Error in dts_data_filter : {str(e)}")
+        raise 
+
+# COMMAND ----------
+
+def dts_file_publish(spark, logger, df : DataFrame, target_file_path : str, epoch_start_time : int, time_window : int, sample_size: int):
+    try:
+        if (time_window == 1800):
+            freq = "30mins"
+        elif (time_window == 3600):
+            freq = "60mins"
+        elif (time_window == 86400):
+            freq = "1day"
+        elif (time_window == 604800):
+            freq = "1week"
+        elif (time_window == 2592000):
+            freq = "1month"
+        
+      
+        # Get the distinct device_id values from the table
+        asset_ids = df.select("asset_id").distinct().collect()
+
+        logger.info(f"Asset _ids: {asset_ids}")
+
+        # Iterate over each row in the DataFrame
+        for asset_id in asset_ids:
+            # Filter the table by device_id
+            new_df = df.filter(df["asset_id"] == asset_id[0])
+
+            # Step 1: Pivot the DataFrame to have fiber_length as columns
+            pivoted_df = new_df.groupBy("epoch_timestamp", "asset_id") \
+                .pivot("fiber_length") \
+                .agg(F.first("temperature"))
+
+            # Step 1: Bucket the epoch timestamps
+            window_spec = Window.partitionBy("asset_id").orderBy("epoch_timestamp")
+            bucketed_df = pivoted_df.withColumn("bucket", F.ntile(sample_size).over(window_spec))
+
+            # Select the first timestamp in each bucket for each asset_id
+            timestamp_df = bucketed_df.withColumn("first_timestamp", F.first("epoch_timestamp").over(Window.partitionBy("asset_id", "bucket"))).drop("epoch_timestamp")
+
+            float_column_names = sorted(
+            [
+                float(col)
+                for col in timestamp_df.columns
+                if col not in ["first_timestamp", "asset_id", "bucket"]
+            ]
+            )
+
+            # Once the columns are converted we are converting them to string. e.g. ['1','2','3','4',...]
+            column_names = [str(col) for col in float_column_names]
+
+            averaged_df = timestamp_df.groupBy("bucket", "asset_id") \
+            .agg(
+                F.first("first_timestamp").alias("first_timestamp"), # Pick the first timestamp of each bucket
+                # *[F.avg(col).alias(f"{col}") for col in column_names] # Average each temperature column
+                *[F.avg(F.col(f"`{col}`")).alias(col) for col in column_names]
+
+            )
+
+            collected_df = averaged_df.groupBy("asset_id") \
+            .agg(
+                F.collect_list("first_timestamp").alias("time"), # Collect list of first timestamps
+                F.array(*[F.lit(col) for col in column_names]).alias("depth"), # Collect column names as depth
+                # *[F.collect_list(col).alias(f"{col}") for col in column_names] # Collect fiber length columns
+                *[F.collect_list(F.col(f"`{col}`")).alias(col) for col in column_names]
+
+            )
+
+            df_pivoted = collected_df.groupBy("time", "depth").agg(
+                # F.collect_list(F.array(column_names)).alias("data")
+                F.collect_list(F.array(*[F.col(f"`{col}`") for col in column_names])).alias("data")
+
+            )
+
+            final_df = df_pivoted.withColumn(
+                "data", F.flatten(F.col("data"))
+            )
+
+            # output_json = final_df.withColumn('json_output', struct(col('data'), col('time'), col('depth')))
+            output_json = final_df.withColumn('json_output', F.struct(F.col('data'), F.col('time'), F.col('depth'))
+)
+
+
+            # Collect the single row from the DataFrame
+            row = output_json.collect()[0]
+
+            # Extract and convert the json_output column to a JSON string
+            json_output = json.dumps(row.json_output.asDict(), ensure_ascii=False)
+
+            # Construct the path where files would be published
+            write_file_path = f"{target_file_path}/{asset_id[0]}"
+
+            # Construct the file path    
+            file_path = f"{write_file_path}/{epoch_start_time}_{freq}.json"
+
+            # Construct the cloud file path with the final file name
+            cloud_zip_file_path = f"{write_file_path}/{epoch_start_time}_{freq}.zip"
+
+            # Construct the local file path where files will be written for zipping files locally
+            # local_file_path = f"/{epoch_start_time}_{freq}.json"
+            local_file_path = f"/{asset_id[0]}_{epoch_start_time}_{freq}.json"
+
+            # Construct the local zip file path present in the driver node.
+            zip_file_path = f"/tmp/{epoch_start_time}_{freq}.zip"
+            # zip_file_path = f"/tmp/{asset_id[0]}_{epoch_start_time}_{freq}.zip"
+
+            # # Write the JSON data to a local file 
+            with open(local_file_path, 'w') as f:
+                f.write(json_output)
+
+            # # Create a ZipFile object    
+            with zipfile.ZipFile(zip_file_path, 'w',compression = zipfile.ZIP_DEFLATED) as zipf:
+                # Add the file to the zip file        
+                zipf.write(local_file_path)
+            
+            # Remove the local file
+            os.remove(local_file_path)
+
+            # Write the zip file to ADLS Gen2
+            # dbutils.fs.cp(f"file:{zip_file_path}", cloud_zip_file_path)
+            try:
+                dbutils.fs.cp(f"file:{zip_file_path}", cloud_zip_file_path)
+                logger.info(f"File uploaded to: {cloud_zip_file_path}")
+            except Exception as e:
+                logger.error(f"Upload failed: {str(e)}")
+
+
+            # Remove the local zip file
+            os.remove(zip_file_path)
+
+    except Exception as e:
+        logger.error(f"Error in dts_file_publish : {str(e)}")
+        raise 
+
+# COMMAND ----------
+
+from datetime import datetime, timedelta, time as t
+
+def last_window_start_time(spark, logger, current_time_epoch: int, time_window: int) -> int:
+    try:
+        logger.info("Inside last_window_start_time function")
+        start_time = 0
+        evaluation_time = current_time_epoch - time_window
+
+        # Convert epoch to datetime
+        current_datetime = datetime.fromtimestamp(current_time_epoch)
+
+        if time_window in [1800, 3600]:
+            seed_time = evaluation_time % time_window
+            start_time = evaluation_time - seed_time
+
+        elif time_window == 86400:
+            is_within_time_window = t(0, 0) <= current_datetime.time() < t(0, 30)
+            if is_within_time_window:
+                previous_day = current_datetime.date() - timedelta(days=1)
+                start_time = int(datetime.combine(previous_day, t(0, 0)).timestamp())
+
+        elif time_window == 604800:
+            is_monday = current_datetime.weekday() == 0
+            is_within_time_window = t(0, 0) <= current_datetime.time() < t(0, 30)
+            logger.info(f"Time window : {time_window} | is_monday : {is_monday} | is_within_time_window : {is_within_time_window}")
+            if is_monday and is_within_time_window:
+                previous_week_start = current_datetime - timedelta(days=7)
+                previous_week_start = previous_week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                start_time = int(previous_week_start.timestamp())
+
+        elif time_window == 2592000:
+            is_first_day_of_month = current_datetime.day == 1
+            is_within_time_window = t(0, 0) <= current_datetime.time() < t(0, 30)
+            logger.info(f"Time window : {time_window} | is_first_day_of_month : {is_first_day_of_month} | is_within_time_window : {is_within_time_window}")
+            if is_first_day_of_month and is_within_time_window:
+                first_day_of_current_month = current_datetime.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
+                start_time = int(last_day_of_previous_month.replace(day=1).timestamp())
+
+        return start_time
+
+    except Exception as e:
+        logger.error(f"Error in last_window_start_time : {str(e)}")
+        raise
+
+# COMMAND ----------
+
+# Function to truncate data based on the epoch time column ('time')
+def truncate_data_dts(spark, logger, silver_table) -> None:
+    """
+    Delete previous month data from the silver table on the first monday of the current month.
+    """
+    try:
+        logger.info("Starting data truncation process...")
+
+        # Get the current date
+        current_date = datetime.now()
+        day = current_date.day
+        day_of_week = current_date.weekday()
+        is_within_time_window = t(0,0) <= current_date.time() < t(0,30)
+
+        # Check if today is the first Monday of the current month
+        if day_of_week == 0  and day <= 7 and is_within_time_window:
+            logger.info("Today is the first Monday of the month. Proceeding with truncation...")
+            first_day_of_month = current_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            # Get the epoch time for the first of the last month
+            epoch_time = int(first_day_of_month.timestamp())
+
+            # Perform the DELETE operation to remove rows older than the first of last month
+            silver_table.delete(F.col("epoch_timestamp") < epoch_time)
+            
+        else:
+            logger.info("Today is not the first Monday of the month. Skipping truncation.")
+            
+
+    except Exception as e:
+        logger.error(f"Error in truncate_data: {str(e)}")
+        raise
+            
+
+# COMMAND ----------
+
+def current_window_start_time(spark, logger, current_time_epoch : int, time_window : int) -> int:
+    try:
+        start_time_date = datetime.fromtimestamp(current_time_epoch)
+        start_time = current_time_epoch
+
+        if time_window in [1800, 3600, 86400]:
+            seed_time = current_time_epoch % time_window
+            start_time = current_time_epoch - seed_time
+        elif time_window == 604800:
+            current_datetime = datetime.fromtimestamp(current_time_epoch)
+            start_of_week = current_datetime - timedelta(days=current_datetime.weekday())
+            start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_time = int(start_of_week.timestamp())
+                
+        # elif time_window == 604800:
+        #     start_of_this_week = start_time_date - timedelta(days=start_time_date.weekday())  # Start of this week (Monday)
+        #     start_of_this_week = start_of_this_week.replace(hour=0, minute=0, second=0)
+        #     start_time = int(start_of_this_week.timestamp())
+        elif time_window == 2592000:
+            month_start = (
+                datetime.fromtimestamp(current_time_epoch)
+                .replace(day=1, hour=0, minute=0, second=0)
+                .timestamp()
+            )
+            start_time = int(month_start)
+
+        logger.info(f"Current window start time:{start_time}")
+        return start_time
+
+    except Exception as e:
+        if "ZeroDivisionError" in str(e):
+            logger.error(f"Error in current_window_start_time: {str(e)}")
+            raise 
+        else:
+            logger.error(f"Error in current_window_start_time : {str(e)}")
+            raise
+
+# COMMAND ----------
+
+def dts_data_publish(spark, logger, bronze_table_name : str, target_file_path : str,initation_time : int, time_window : int, sample_size: int):
+    try:
+        logger.info(f"Starting execution for execution time : {initation_time} and time_window : {time_window}")
+        # Current Window execution
+        cw_start_time = current_window_start_time(spark, logger, initation_time, time_window)
+        logger.info("Reading the dts delta table...")
+        dts_delta_table_bronze = read_delta_table(spark, logger, bronze_table_name)
+        dts_df_bronze = dts_delta_table_bronze.toDF() 
+        cw_dts_df_filtered = dts_data_filter(spark, logger, cw_start_time, time_window, dts_df_bronze) 
+
+        if cw_dts_df_filtered.count()!=0:
+            logger.info(f"Data found, current window execution will happen and files will be published")
+
+            dts_file_publish(spark, logger, cw_dts_df_filtered, target_file_path, cw_start_time, time_window,sample_size)
+            
+            logger.info(f"Current window data published successfully")
+        else:
+            logger.info(f"No data found for current window. No data will be published...")
+
+
+        # Last Window execution for edge cases
+        lw_start_time = last_window_start_time(spark, logger, initation_time, time_window)
+        
+        # lw_start_time == -1 means it is not an edge case and hence last window execution won't happen
+        if lw_start_time == 0:
+            logger.info("Last window execution will not happen.")
+        else:
+            logger.info("Last window execution will happen since it is edge case. Starting execution...")
+            dts_delta_table_bronze = read_delta_table(spark, logger, bronze_table_name)
+            dts_df_bronze = dts_delta_table_bronze.toDF()
+             
+            lw_dts_df_filtered = dts_data_filter(spark, logger, lw_start_time, time_window, dts_df_bronze) 
+
+            if lw_dts_df_filtered.count()!=0:
+                logger.info(f"Data found, last window execution will happen and files will be published")
+
+                dts_file_publish(spark, logger, lw_dts_df_filtered, target_file_path, lw_start_time, time_window, sample_size)
+                
+                logger.info(f"Last window data published successfully")
+            else:
+                logger.info(f"No data found for last window. No data will be published...")
+                
+        if time_window == 2592000:
+           truncate_data_dts(spark, logger, dts_delta_table_bronze)
+
+    except Exception as e:
+        logger.error(f"Error in dts_data_publish : {str(e)}")
+        raise 
