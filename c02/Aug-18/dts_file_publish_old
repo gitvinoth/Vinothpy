@@ -1,0 +1,114 @@
+def dts_file_publish(spark, logger, df : DataFrame, target_file_path : str, epoch_start_time : int, time_window : int, sample_size: int):
+    try:
+        if (time_window == 1800):
+            freq = "30mins"
+        elif (time_window == 3600):
+            freq = "60mins"
+        elif (time_window == 86400):
+            freq = "1day"
+        elif (time_window == 604800):
+            freq = "1week"
+        elif (time_window == 2592000):
+            freq = "1month"
+        
+      
+        # Get the distinct device_id values from the table
+        asset_ids = df.select("asset_id").distinct().collect()
+
+        logger.info(f"Asset _ids: {asset_ids}")
+
+        # Iterate over each row in the DataFrame
+        for asset_id in asset_ids:
+            # Filter the table by device_id
+            new_df = df.filter(df["asset_id"] == asset_id[0])
+
+            # Step 1: Pivot the DataFrame to have fiber_length as columns
+            pivoted_df = new_df.groupBy("epoch_timestamp", "asset_id") \
+                .pivot("fiber_length") \
+                .agg(F.first("temperature"))
+
+            # Step 1: Bucket the epoch timestamps
+            window_spec = Window.partitionBy("asset_id").orderBy("epoch_timestamp")
+            bucketed_df = pivoted_df.withColumn("bucket", F.ntile(sample_size).over(window_spec))
+
+            # Select the first timestamp in each bucket for each asset_id
+            timestamp_df = bucketed_df.withColumn("first_timestamp", F.first("epoch_timestamp").over(Window.partitionBy("asset_id", "bucket"))).drop("epoch_timestamp")
+
+            int_column_names = sorted(
+            [
+                int(col)
+                for col in timestamp_df.columns
+                if col not in ["first_timestamp", "asset_id", "bucket"]
+            ]
+            )
+
+            # Once the columns are converted we are converting them to string. e.g. ['1','2','3','4',...]
+            column_names = [str(col) for col in int_column_names]
+
+            averaged_df = timestamp_df.groupBy("bucket", "asset_id") \
+            .agg(
+                F.first("first_timestamp").alias("first_timestamp"), # Pick the first timestamp of each bucket
+                *[F.avg(col).alias(f"{col}") for col in column_names] # Average each temperature column
+            )
+
+            collected_df = averaged_df.groupBy("asset_id") \
+            .agg(
+                F.collect_list("first_timestamp").alias("time"), # Collect list of first timestamps
+                F.array(*[F.lit(col) for col in column_names]).alias("depth"), # Collect column names as depth
+                *[F.collect_list(col).alias(f"{col}") for col in column_names] # Collect fiber length columns
+            )
+
+            df_pivoted = collected_df.groupBy("time", "depth").agg(
+                F.collect_list(F.array(column_names)).alias("data")
+            )
+
+            final_df = df_pivoted.withColumn(
+                "data", F.flatten(F.col("data"))
+            )
+
+            output_json = final_df.withColumn('json_output', struct(col('data'), col('time'), col('depth')))
+
+            # Collect the single row from the DataFrame
+            row = output_json.collect()[0]
+
+            # Extract and convert the json_output column to a JSON string
+            json_output = json.dumps(row.json_output.asDict(), ensure_ascii=False)
+
+            # Construct the path where files would be published
+            write_file_path = f"{target_file_path}/{asset_id[0]}"
+
+            # Construct the file path    
+            file_path = f"{write_file_path}/{epoch_start_time}_{freq}.json"
+
+            # Construct the cloud file path with the final file name
+            cloud_zip_file_path = f"{write_file_path}/{epoch_start_time}_{freq}.zip"
+
+            # Construct the local file path where files will be written for zipping files locally
+            # local_file_path = f"/{epoch_start_time}_{freq}.json"
+            local_file_path = f"/{asset_id[0]}_{epoch_start_time}_{freq}.json"
+
+            # Construct the local zip file path present in the driver node.
+            zip_file_path = f"/tmp/{epoch_start_time}_{freq}.zip"
+            # zip_file_path = f"/tmp/{asset_id[0]}_{epoch_start_time}_{freq}.zip"
+
+            # # Write the JSON data to a local file 
+            with open(local_file_path, 'w') as f:
+                f.write(json_output)
+
+            # # Create a ZipFile object    
+            with zipfile.ZipFile(zip_file_path, 'w',compression = zipfile.ZIP_DEFLATED) as zipf:
+                # Add the file to the zip file        
+                zipf.write(local_file_path)
+            
+            # Remove the local file
+            os.remove(local_file_path)
+
+            # Write the zip file to ADLS Gen2
+            dbutils.fs.cp(f"file:{zip_file_path}", cloud_zip_file_path)
+
+            # Remove the local zip file
+            os.remove(zip_file_path)
+
+    except Exception as e:
+        logger.error(f"Error in dts_file_publish : {str(e)}")
+        raise 
