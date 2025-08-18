@@ -1,162 +1,170 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
 def dts_file_publish(
-   spark,
-   logger,
-   df: DataFrame,
-   target_file_path: str,
-   epoch_start_time: int,
-   time_window: int,
-   sample_size: int
+    spark,
+    logger,
+    df: DataFrame,
+    target_file_path: str,
+    epoch_start_time: int,
+    time_window: int,
+    sample_size: int
 ):
-   """
-   Publish ONE file per (asset_id, window) with depth-major multi-time JSON:
-     {
-       "data":  [[d1_t1, d1_t2, ...], [d2_t1, d2_t2, ...], ...],
-       "time":  [t1, t2, ...],      # ordered by bucket ascending
-       "depth": [d1, d2, ...]       # numeric-looking depth labels as strings, ascending
-     }
-   Steps:
-     1) Pivot fiber_length -> depth columns (once).
-     2) Bucket rows per asset into 'sample_size' tiles by epoch_timestamp.
-     3) AVG each depth column within bucket; MIN(epoch_timestamp) as the bucket time.
-     4) Aggregate per asset: collect_list(time) and collect_list of each depth column, ordered by bucket.
-     5) Build depth-major "data" and write ONE JSON per asset for this window.
-   """
-   try:
-       # ----- frequency name -----
-       if time_window == 1800:
-           freq = "30mins"
-       elif time_window == 3600:
-           freq = "60mins"
-       elif time_window == 86400:
-           freq = "1day"
-       elif time_window == 604800:
-           freq = "1week"
-       elif time_window == 2592000:
-           freq = "1month"
-       else:
-           raise ValueError(f"Unsupported time_window: {time_window}")
-       # ----- 1) Pivot once for all assets -----
-       pivoted_df = (
-           df.groupBy("epoch_timestamp", "asset_id")
-             .pivot("fiber_length")
-             .agg(F.first("temperature"))
-       )
-       # Depth column discovery from pivoted schema (numeric-looking column names only)
-       meta_cols = {"epoch_timestamp", "asset_id"}
-       depth_cols = []
-       for c in pivoted_df.columns:
-           if c in meta_cols:
-               continue
-           try:
-               float(c)  # keep numeric-looking names
-               depth_cols.append(c)
-           except Exception:
-               pass
-       if not depth_cols:
-           logger.warning("No depth columns detected after pivot; nothing to publish.")
-           return
-       # Stable numeric ordering for depths (as strings)
-       try:
-           depth_cols = sorted(depth_cols, key=lambda x: float(x))
-       except Exception:
-           depth_cols = sorted(depth_cols)
-       # ----- 2) Bucket per asset -----
-       w_ordered = Window.partitionBy("asset_id").orderBy(F.col("epoch_timestamp").asc())
-       bucketed_df = pivoted_df.withColumn("bucket", F.ntile(sample_size).over(w_ordered))
-       # ----- 3) Aggregate per (asset_id, bucket) -----
-       avg_exprs = [F.avg(F.col(f"`{c}`")).alias(c) for c in depth_cols]
-       per_bucket = (
-           bucketed_df.groupBy("asset_id", "bucket")
-                      .agg(
-                          F.min("epoch_timestamp").alias("first_timestamp"),
-                          *avg_exprs
-                      )
-       )
-       # ----- 4) Order by bucket and aggregate PER ASSET into multi-time arrays -----
-       # time = collect_list(first_timestamp) ordered by bucket asc
-       # depth arrays = collect_list(<depth col>) ordered by bucket asc
-       ordered = (
-           per_bucket
-           .orderBy("bucket")
-           .groupBy("asset_id")
-           .agg(
-               F.collect_list("first_timestamp").alias("time"),
-               *[F.collect_list(F.col(f"`{c}`")).alias(f"arr__{i}") for i, c in enumerate(depth_cols)]
-           )
-       )
-       # Build 'depth' and 'data' columns: depth is array of labels; data is array-of-arrays in depth order
-       depth_lits = F.array(*[F.lit(c) for c in depth_cols])
-       data_arrays = F.array(*[F.col(f"arr__{i}") for i, _ in enumerate(depth_cols)])
-       final = (
-           ordered
-           .withColumn("depth", depth_lits)
-           .withColumn("data",  data_arrays)
-           .select("asset_id", "time", "depth", "data")
-       )
-       # Collect once per asset (one JSON per asset)
-       rows = final.collect()
-       if not rows:
-           logger.info("No aggregated rows to publish.")
-           return
-       # ----- 5) Prepare per-asset tasks -----
-       tasks = []
-       for r in rows:
-           tasks.append({
-               "asset_id": r["asset_id"],
-               "time":     r["time"]  or [],
-               "depth":    r["depth"] or [],
-               "data":     r["data"]  or []
-           })
-       logger.info(f"Prepared {len(tasks)} asset files; depths={len(depth_cols)}; sample_size={sample_size}")
-       def publish_one(task):
-           asset_id = task["asset_id"]
-           time_arr = task["time"]
-           depth_arr = task["depth"]
-           data_arr = task["data"]
-           # Ensure depth-major data shape aligns with depth_arr length
-           # (Should naturally, but keep a small guard)
-           if len(data_arr) != len(depth_arr):
-               # pad/trim defensively to avoid malformed JSON
-               min_len = min(len(data_arr), len(depth_arr))
-               data_arr = data_arr[:min_len]
-               depth_arr = depth_arr[:min_len]
-           json_obj = {
-               "data":  data_arr,     # [[d1_t1, d1_t2, ...], [d2_t1, d2_t2, ...]]
-               "time":  time_arr,     # [t1, t2, ...] ordered by bucket
-               "depth": depth_arr     # [d1, d2, ...]
-           }
-           json_output = json.dumps(json_obj, ensure_ascii=False)
-           # ONE file per asset for this window
-           write_dir  = f"{target_file_path}/{asset_id}"
-           file_stem  = f"{asset_id}_{epoch_start_time}_{freq}"
-           local_json = f"/tmp/{file_stem}.json"
-           local_zip  = f"/tmp/{file_stem}.zip"
-           cloud_zip  = f"{write_dir}/{epoch_start_time}_{freq}.zip"
-           try:
-               # Write JSON locally
-               with open(local_json, "w") as f:
-                   f.write(json_output)
-               # Zip locally
-               with zipfile.ZipFile(local_zip, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
-                   zipf.write(local_json, arcname=f"{file_stem}.json")
-               # Upload
-               dbutils.fs.cp(f"file:{local_zip}", cloud_zip, True)
-               return f"[{asset_id}] Uploaded: {cloud_zip}"
-           except Exception as e:
-               return f"[{asset_id}] FAILED: {e}"
-           finally:
-               # Cleanup
-               for p in (local_json, local_zip):
-                   try:
-                       os.remove(p)
-                   except Exception:
-                       pass
-       # ----- 6) Parallelize by asset (max 10 concurrent uploads) -----
-       with ThreadPoolExecutor(max_workers=10) as ex:
-           futures = [ex.submit(publish_one, t) for t in tasks]
-           for fut in as_completed(futures):
-               logger.info(fut.result())
-   except Exception as e:
-       logger.error(f"Error in dts_file_publish : {str(e)}")
-       raise
+    """
+    FAST version (no pivot):
+      - Buckets per asset by epoch_timestamp (ntile(sample_size))
+      - Aggregates temperature per (asset, bucket, depth=fiber_length)
+      - Builds depth-major data and time arrays entirely in Spark using higher-order fns
+      - Emits ONE JSON per asset per window: {"data":[[...],[...]], "time":[...], "depth":[...]}
+      - Collects (asset_id, json) pairs to driver, then zips/uploads in parallel
+    """
+    try:
+        # ----- frequency label -----
+        if time_window == 1800:
+            freq = "30mins"
+        elif time_window == 3600:
+            freq = "60mins"
+        elif time_window == 86400:
+            freq = "1day"
+        elif time_window == 604800:
+            freq = "1week"
+        elif time_window == 2592000:
+            freq = "1month"
+        else:
+            raise ValueError(f"Unsupported time_window: {time_window}")
+        # Optional: tune shuffles if your cluster is large
+        # spark.conf.set("spark.sql.shuffle.partitions", max(200, sample_size * 50))
+        # Ensure required columns exist
+        required_cols = {"asset_id", "fiber_length", "epoch_timestamp", "temperature"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"Input DataFrame missing columns: {missing}")
+        # 1) Bucket rows per asset in time order
+        w_order = Window.partitionBy("asset_id").orderBy(F.col("epoch_timestamp").asc())
+        with_bkt = df.withColumn("bucket", F.ntile(sample_size).over(w_order))
+        # 2) Aggregate per (asset, bucket, depth)
+        per_bkt_depth = (
+            with_bkt
+            .groupBy("asset_id", "bucket", "fiber_length")
+            .agg(
+                F.min("epoch_timestamp").alias("first_ts_in_bucket"),
+                F.avg("temperature").alias("avg_temp")
+            )
+        )
+        # 3) Compute the "time" array per (asset) ordered by bucket (distinct values only)
+        time_per_asset = (
+            per_bkt_depth
+            .groupBy("asset_id", "bucket")
+            .agg(F.min("first_ts_in_bucket").alias("bucket_ts"))
+            .groupBy("asset_id")
+            .agg(
+                F.sort_array(
+                    F.collect_list(F.struct(F.col("bucket"), F.col("bucket_ts")))
+                ).alias("time_structs")
+            )
+            .select(
+                "asset_id",
+                # Extract bucket_ts, deduplicate
+                F.array_distinct(
+                    F.transform("time_structs", lambda s: s["bucket_ts"])
+                ).alias("time")
+            )
+        )
+        # 4) For each (asset, depth), build its series across buckets ordered by bucket
+        depth_series = (
+            per_bkt_depth
+            .select(
+                "asset_id",
+                F.col("fiber_length").cast("string").alias("depth"),
+                "bucket",
+                F.col("avg_temp").alias("val")
+            )
+            .groupBy("asset_id", "depth")
+            .agg(
+                F.sort_array(
+                    F.collect_list(F.struct(F.col("bucket"), F.col("val")))
+                ).alias("series_structs")
+            )
+            .select(
+                "asset_id",
+                "depth",
+                F.transform("series_structs", lambda s: s["val"]).alias("series")
+            )
+        )
+        # 5) Assemble per-asset depth list (sorted numeric) and data (depth-major) using higher-order fns
+        #    - Collect (depth, series) pairs, sort by numeric(depth), then map to arrays
+        by_asset = (
+            depth_series
+            .groupBy("asset_id")
+            .agg(
+                F.collect_list(F.struct("depth", "series")).alias("pairs")
+            )
+            .select(
+                "asset_id",
+                # sort depth/series pairs by numeric depth; fallback to lexical if cast fails
+                F.expr("""
+                    transform(
+                      array_sort(
+                        transform(pairs, p -> struct(try_cast(p.depth as double) as k, p.depth as d, p.series as s))
+                      ),
+                      x -> struct(x.d as depth, x.s as series)
+                    )
+                """).alias("sorted_pairs")
+            )
+            .select(
+                "asset_id",
+                F.transform("sorted_pairs", lambda p: p["depth"]).alias("depth"),
+                F.transform("sorted_pairs", lambda p: p["series"]).alias("data")  # array of arrays depth-major
+            )
+        )
+        # 6) Join time + (depth,data) per asset
+        per_asset_json_df = (
+            by_asset.alias("a")
+            .join(time_per_asset.alias("t"), on="asset_id", how="left")
+            .select(
+                "asset_id",
+                F.when(F.col("t.time").isNull(), F.array().cast("array<long>")).otherwise(F.col("t.time")).alias("time"),
+                F.when(F.size("a.depth").isNull(), F.array().cast("array<string>")).otherwise(F.col("a.depth")).alias("depth"),
+                F.when(F.size("a.data").isNull(),  F.array().cast("array<array<double>>")).otherwise(F.col("a.data")).alias("data")
+            )
+            # Build the final JSON in Spark (small strings to collect)
+            .select(
+                "asset_id",
+                F.to_json(F.struct(F.col("data"), F.col("time"), F.col("depth"))).alias("json_str")
+            )
+        )
+        # 7) Collect tiny (asset_id, json) rows to driver
+        small_rows = per_asset_json_df.collect()
+        if not small_rows:
+            logger.info("No assets to publish after aggregation.")
+            return
+        # 8) Upload each asset file in parallel (zip JSON then cp to ABFS)
+        def publish_one(asset_id: str, json_str: str) -> str:
+            write_dir  = f"{target_file_path}/{asset_id}"
+            file_stem  = f"{asset_id}_{epoch_start_time}_{freq}"
+            local_json = f"/tmp/{file_stem}.json"
+            local_zip  = f"/tmp/{file_stem}.zip"
+            cloud_zip  = f"{write_dir}/{epoch_start_time}_{freq}.zip"
+            try:
+                with open(local_json, "w") as f:
+                    f.write(json_str)
+                with zipfile.ZipFile(local_zip, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.write(local_json, arcname=f"{file_stem}.json")
+                dbutils.fs.cp(f"file:{local_zip}", cloud_zip, True)
+                return f"[{asset_id}] Uploaded: {cloud_zip}"
+            except Exception as e:
+                return f"[{asset_id}] FAILED: {e}"
+            finally:
+                for p in (local_json, local_zip):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+        with ThreadPoolExecutor(max_workers=30) as ex:
+            futures = [ex.submit(publish_one, r["asset_id"], r["json_str"]) for r in small_rows]
+            for fut in as_completed(futures):
+                logger.info(fut.result())
+    except Exception as e:
+        logger.error(f"Error in dts_file_publish : {str(e)}")
+        raise
