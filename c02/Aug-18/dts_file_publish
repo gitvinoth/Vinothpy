@@ -1,0 +1,149 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+def dts_file_publish(spark, logger, df: DataFrame, target_file_path: str, epoch_start_time: int, time_window: int, sample_size: int):
+   """
+   For each asset_id in df:
+     1) Pivot fiber_length -> columns (depths)
+     2) Bucket rows into 'sample_size' buckets ordered by epoch_timestamp
+     3) Pick the *minimum* epoch_timestamp per bucket as the representative (deterministic)
+     4) Average values per column within each bucket
+     5) Build single JSON object: { time: [...], depth: [...], data: [[...], ...] }
+     6) Write JSON locally -> zip -> upload to ABFS under {target}/<asset_id>/<epoch>_<freq>.zip
+   Parallelizes the per-asset publish on the driver with up to 10 threads.
+   """
+   try:
+       if time_window == 1800:
+           freq = "30mins"
+       elif time_window == 3600:
+           freq = "60mins"
+       elif time_window == 86400:
+           freq = "1day"
+       elif time_window == 604800:
+           freq = "1week"
+       elif time_window == 2592000:
+           freq = "1month"
+       else:
+           raise ValueError(f"Unsupported time_window: {time_window}")
+       asset_ids = [r[0] for r in df.select("asset_id").distinct().collect()]
+       logger.info(f"Assets to publish ({len(asset_ids)}): {asset_ids}")
+       def publish_one(asset_id: str) -> str:
+           try:
+               # Filter to one asset
+               new_df = df.filter(F.col("asset_id") == asset_id)
+               # Pivot (depth columns)
+               pivoted_df = (
+                   new_df.groupBy("epoch_timestamp", "asset_id")
+                   .pivot("fiber_length")
+                   .agg(F.first("temperature"))
+               )
+               # Bucket within asset by epoch_timestamp into 'sample_size' tiles
+               w_ordered = Window.partitionBy("asset_id").orderBy(F.col("epoch_timestamp").asc())
+               bucketed_df = pivoted_df.withColumn("bucket", F.ntile(sample_size).over(w_ordered))
+               # Deterministic representative timestamp per bucket: MIN(epoch_timestamp)
+               rep_ts = (
+                   bucketed_df.groupBy("asset_id", "bucket")
+                   .agg(F.min("epoch_timestamp").alias("rep_ts"))
+               )
+               # Join back to keep one row per (asset_id, bucket) containing depth columns
+               joined = (
+                   bucketed_df.join(rep_ts, on=["asset_id", "bucket"], how="inner")
+                   .filter(F.col("epoch_timestamp") == F.col("rep_ts"))
+                   .drop("epoch_timestamp")
+               )
+               # Identify depth columns (everything that is numeric and not metadata)
+               depth_cols_float = sorted([
+                   float(c) for c, t in joined.dtypes
+                   if c not in ("asset_id", "bucket", "rep_ts") and t not in ("string",)
+               ])
+               depth_cols = [str(x) for x in depth_cols_float]
+               # Average within bucket (most buckets will be 1 row after the filter, but this is safe)
+               avg_df = (
+                   bucketed_df.groupBy("asset_id", "bucket")
+                   .agg(
+                       F.min("epoch_timestamp").alias("first_timestamp"),
+                       *[F.avg(F.col(f"`{c}`")).alias(c) for c in depth_cols]
+                   )
+               )
+               # Collect per-asset arrays: time (first_timestamp list), depth (column names), data (rows per bucket)
+               # Build per-bucket row array [col1, col2, ...]
+               row_arrays = F.array(*[F.col(f"`{c}`") for c in depth_cols])
+               per_asset_rows = (
+                   avg_df
+                   .select(
+                       "asset_id",
+                       "first_timestamp",
+                       F.array(*[F.lit(c) for c in depth_cols]).alias("depth"),
+                       row_arrays.alias("row_arr")
+                   )
+               )
+               # Aggregate rows in order of bucket (we lost 'bucket' in select, so reattach for ordering)
+               avg_df_with_row = avg_df.select(
+                   "asset_id","bucket","first_timestamp", *[F.col(f"`{c}`") for c in depth_cols]
+               )
+               row_arrays2 = F.array(*[F.col(f"`{c}`") for c in depth_cols])
+               ordered = (
+                   avg_df_with_row
+                   .orderBy("bucket")
+                   .groupBy("asset_id")
+                   .agg(
+                       F.collect_list("first_timestamp").alias("time"),
+                       F.first(F.array(*[F.lit(c) for c in depth_cols])).alias("depth"),
+                       F.collect_list(row_arrays2).alias("data")
+                   )
+               )
+               # There should be exactly one row per asset_id after aggregation
+               rows = ordered.collect()
+               if not rows:
+                   msg = f"No rows to publish for asset {asset_id} at {epoch_start_time} ({freq})"
+                   logger.warning(msg)
+                   return msg
+               row = rows[0]
+               json_obj = {
+                   "time": row["time"],
+                   "depth": row["depth"],
+                   "data": row["data"],
+               }
+               json_output = json.dumps(json_obj, ensure_ascii=False)
+               # Paths
+               write_file_path = f"{target_file_path}/{asset_id}"
+               file_basename = f"{asset_id}_{epoch_start_time}_{freq}"
+               local_json = f"/tmp/{file_basename}.json"
+               local_zip = f"/tmp/{file_basename}.zip"
+               cloud_zip = f"{write_file_path}/{epoch_start_time}_{freq}.zip"
+               # Write JSON locally
+               with open(local_json, "w") as f:
+                   f.write(json_output)
+               # Zip locally (zip contains the JSON file)
+               with zipfile.ZipFile(local_zip, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+                   zipf.write(local_json, arcname=f"{file_basename}.json")
+               # Upload to ABFS
+               try:
+                   dbutils.fs.cp(f"file:{local_zip}", cloud_zip, True)
+                   logger.info(f"[{asset_id}] Uploaded: {cloud_zip}")
+                   result = f"UPLOADED {cloud_zip}"
+               except Exception as up_e:
+                   logger.error(f"[{asset_id}] Upload failed: {str(up_e)}")
+                   result = f"FAILED {cloud_zip}: {up_e}"
+               # Cleanup
+               try:
+                   os.remove(local_json)
+               except Exception as _:
+                   pass
+               try:
+                   os.remove(local_zip)
+               except Exception as _:
+                   pass
+               return result
+           except Exception as e:
+               logger.error(f"[{asset_id}] Error in dts_file_publish: {str(e)}")
+               return f"ERROR {asset_id}: {e}"
+       # Parallelize per-asset publishing (10 at a time)
+       futures = []
+       with ThreadPoolExecutor(max_workers=10) as ex:
+           for a in asset_ids:
+               futures.append(ex.submit(publish_one, a))
+           for fut in as_completed(futures):
+               res = fut.result()
+               logger.info(f"[publish_one] {res}")
+   except Exception as e:
+       logger.error(f"Error in dts_file_publish : {str(e)}")
+       raise
