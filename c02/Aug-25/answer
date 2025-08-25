@@ -1,0 +1,253 @@
+# In get_rules_df(...): add fields
+
+conditions_schema = StructType([
+    StructField("condition_id", IntegerType(), True),
+    StructField("condition_name", StringType(), True),
+    StructField("asset_id", ArrayType(StringType()), True),
+    StructField("parameter", StringType(), True),  # we'll normalize if array shows up
+    StructField("operator", StringType(), True),
+    StructField("class", IntegerType(), True),
+    StructField("threshold", DoubleType(), True),
+    StructField("duration", IntegerType(), True),
+    StructField("wire", StringType(), True),
+    StructField("function", StringType(), True),
+    StructField("wire_length_from", IntegerType(), True),
+    StructField("wire_length_to", IntegerType(), True),
+    StructField("rule_run_frequency", IntegerType(), True),
+    StructField("sensor_type", StringType(), True),
+    StructField("baseline_time", IntegerType(), True),
+    StructField("threshold_unit", StringType(), True),
+    StructField("path", StringType(), True)  # NEW: per-condition script path
+])
+
+schema = StructType([
+    StructField("rule_id", IntegerType()),
+    StructField("rule_name", StringType(), True),
+    StructField("tenant_id", StringType(), True),
+    StructField("join_condition", StringType(), True),
+    StructField("severity", StringType(), True),
+    StructField("risk_register_controls", ArrayType(IntegerType()), True),
+    StructField("conditions", ArrayType(conditions_schema), True),
+    StructField("rule_type", StringType(), True),   # NEW: rule kind (sql | script)
+    StructField("operation", StringType(), True),
+])
+
+
+
+
+
+
+
+
+
+
+--------------------------------
+
+
+
+
+# After exploding "conditions" in apply_join_condition(...), add:
+.withColumn("path", col("conditions")["path"])       # NEW
+# Fix parameter if someone sends ["pressure"] instead of "pressure"
+.withColumn(
+    "parameter",
+    when(col("conditions")["parameter"].isNull(), lit(None).cast("string"))
+    .when(col("conditions")["parameter"].startswith("["),  # crude guard for bad inputs
+          expr("CAST(element_at(split(regexp_replace(regexp_replace(conditions.parameter, '\\\\[|\\\\]|\\\"', ''), '\\\\s+', ''), ','), 1) AS string)")
+    )
+    .otherwise(col("conditions")["parameter"])
+)
+
+
+
+
+
+---------------------
+
+
+
+@udf(returnType=StringType())
+def generate_query_udf(
+    asset_id_list: list[str],
+    parameter: str,
+    clss: int,
+    data_frequency_list: list[int],
+    baseline_timestamp_list: int,
+    function: str,
+    wire: str,
+    wire_length_from: int,
+    wire_length_to: int,
+    duration: int,
+    join_condition: str,
+    operator: str,
+    threshold: float,
+    threshold_unit: str,
+    rule_type: str,          # NEW
+    script_path: str         # NEW (per-condition "path")
+) -> str:
+    try:
+        data_frequency_list = [int(df) for df in data_frequency_list]
+        # normalize function label (Raw/Average/etc)
+        function = NAME_FUNCTION_MAPPING.get(function, function)
+
+        # NEW: If this is a script rule, return a JSON payload instead of SQL
+        if rule_type and rule_type.lower() == "script":
+            # This payload will be consumed by your external-rule runner
+            # Keep it flat & explicit—downstream is easier.
+            import json
+            payload = {
+                "kind": "script",
+                "path": script_path,                   # e.g., "file:/scripts/sample_test.py"
+                "join_condition": (join_condition or "and").lower(),
+                "assets": asset_id_list or [],
+                "parameter": parameter,
+                "operator": operator,
+                "threshold": threshold,
+                "threshold_unit": threshold_unit,
+                "duration": duration,
+                "function": function,
+                "wire": wire,
+                "wire_length_from": wire_length_from,
+                "wire_length_to": wire_length_to,
+                "baseline_time": baseline_timestamp_list,
+                # downstream will swap these at runtime:
+                "template_vars": {
+                    "start_time": "$start_time",
+                    "end_time": "$end_time",
+                    "catalog": "$catalog"
+                }
+            }
+            return json.dumps(payload)
+
+        # Otherwise keep your existing SQL generation paths
+        if parameter in ["pressure", "temperature"]:
+            return handle_pressure_temperature(...)
+        elif parameter in ["surface_flow_rate", "well_head_pressure"]:
+            return handle_flow_meter(...)
+        elif parameter in ["dts", "axial_strain", "bend_magnitude", "distributed_temperature"]:
+            return handle_dss(...)
+        elif parameter == "magnitude":
+            return handle_magnitude(...)
+        elif parameter in ["no_of_events","number_of_seismic_events"]:
+            return handle_no_of_events(...)
+        else:
+            return f"-- Error: Unsupported parameter '{parameter}'"
+    except Exception as e:
+        return f"-- Error generating query: {str(e)}"
+
+
+
+
+-----------
+
+
+# In add_rule_query(...), where you call generate_query_udf:
+rules_df = rules_df.withColumn(
+    "query",
+    lit(
+        generate_query_udf(
+            col("asset_id"),
+            col("parameter"),
+            col("class"),
+            col("data_frequency"),
+            col("baseline_time"),
+            col("function"),
+            col("wire"),
+            col("wire_length_from"),
+            col("wire_length_to"),
+            col("duration"),
+            col("join_condition"),
+            col("operator"),
+            col("threshold"),
+            col("threshold_unit"),
+            col("rule_type"),     # NEW
+            col("path")           # NEW
+        )
+    ),
+)
+
+# Only run the parameter/operator/duration/threshold replacements for SQL strings:
+rules_null_df = rules_df.filter(col("query") == "data_frequency_null")
+rules_df = rules_df.filter(col("query") != "data_frequency_null")
+
+# Skip text replacements if it's a script JSON
+rules_df = rules_df.withColumn(
+    "query",
+    when(col("rule_type").isin("script", "SCRIPT"),
+         col("query"))
+    .otherwise(
+        expr("replace(query,'$operator', operator)")
+    )
+)
+# and keep your existing $duration/$threshold/$class replacements inside the same
+# .otherwise(...) chain (as you already do). The key is to bypass for scripts.
+
+
+
+-----------
+
+
+# 5a) One-time table change (run once)
+# MAGIC %sql
+# MAGIC ALTER TABLE <catalog>.<schema>.rules
+# MAGIC ADD COLUMNS (rule_type STRING, script_path STRING);
+
+# 5b) Before write, set script_path
+rules_df = rules_df.withColumn(
+    "script_path",
+    when(lower(col("rule_type")) == "script", col("path")).otherwise(lit(None).cast("string"))
+)
+
+# 5c) Include the new columns in the SELECT list (write_rules)
+rules_df = rules_df.select(
+    "rule_id",
+    "rule_name",
+    "tenant_id",
+    "join_condition",
+    "condition_id",
+    "condition_name",
+    "asset_id",
+    "parameter",
+    "operator",
+    "class",
+    "threshold",
+    "duration",
+    "wire",
+    "function",
+    "wire_length_from",
+    "wire_length_to",
+    "rule_run_frequency",
+    "max_data_frequency",
+    "sensor_type",
+    "severity",
+    "risk_register_controls",
+    "baseline_time",
+    "threshold_unit",
+    "window_slide_duration",
+    "rule_type",        # NEW
+    "script_path",      # NEW
+    "query",
+    "last_updated_date",
+)
+
+
+---------
+
+
+{
+  "kind": "script",
+  "path": "file:/scripts/sample_test.py",
+  "join_condition": "and",
+  "assets": ["PTG_001","PTG_002","PTG_003"],
+  "parameter": "pressure",
+  "operator": ">",
+  "threshold": 200.0,
+  "threshold_unit": "%",
+  "duration": 40,
+  "function": "differential",
+  "wire": null,
+  "wire_length_from": null,
+  "wire_length_to": null,
+  "baseline_time": 1708992000,
+  "template_vars": { "start_time": "$start_time", "end_time": "$end_time", "catalog": "$catalog" }
+}
